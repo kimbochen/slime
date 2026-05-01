@@ -193,3 +193,9 @@ glm/
 _examples_synced/
 .env
 .DS_Store
+
+# Cluster-specific (not for upstream)
+.modal.toml
+.hf_token.txt
+mnt/
+.claude/scheduled_tasks*

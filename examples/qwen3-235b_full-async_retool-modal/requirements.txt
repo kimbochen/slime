@@ -1,0 +1,3 @@
+jinja2
+psutil
+modal>=0.65

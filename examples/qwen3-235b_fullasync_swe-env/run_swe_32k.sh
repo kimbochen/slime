@@ -84,7 +84,10 @@ PERF_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 8192
+   # Doubled from 8192 → 16384 for the 32K-context variant.
+   # Effective cap = CP × max_tokens_per_gpu = 2 × 16384 = 32K.
+   # Activation memory roughly doubles per rank — within ~110 GB H200 headroom.
+   --max-tokens-per-gpu 16384
 )
 
 GRPO_ARGS=(

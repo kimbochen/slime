@@ -74,17 +74,24 @@ EVAL_ARGS=()
 # ETP=1 + CPU offload. Memory math doesn't change with the new env.
 PERF_ARGS=(
    --tensor-model-parallel-size 4
-   --pipeline-model-parallel-size 4
-   --context-parallel-size 2
+   # PP=2 (was 4) + CP=4 (was 2) keeps world=32 unchanged; reshapes the
+   # parallelism to give context-parallel more ranks to spread activations
+   # across. Effective context cap = CP × max_tokens_per_gpu = 4 × 16384 = 64K.
+   # Per-PP-stage layer count goes from ~23 to ~47, so per-rank weight/grad
+   # footprint grows ~30 GB before Adam offload — still fits with CPU
+   # offload + the ~110 GB H200 headroom.
+   --pipeline-model-parallel-size 2
+   --context-parallel-size 4
    --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
    --sequence-parallel
-   --decoder-last-pipeline-num-layers 22
+   # No --decoder-last-pipeline-num-layers: PP=2 splits evenly (47 / 47),
+   # the uneven-split tuning from PP=4 doesn't apply.
    --recompute-granularity full
    --recompute-method uniform
    --recompute-num-layers 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 8192
+   --max-tokens-per-gpu 16384
 )
 
 GRPO_ARGS=(

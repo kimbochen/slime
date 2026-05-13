@@ -26,7 +26,8 @@ if [ "$NVLINK_COUNT" -gt 0 ]; then HAS_NVLINK=1; else HAS_NVLINK=0; fi
 echo "HAS_NVLINK: $HAS_NVLINK"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-SLIME_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
+EXAMPLE_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
+SLIME_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
 FULLY_ASYNC_DIR="${SLIME_ROOT}/examples/fully_async"
 
 # Qwen3-235B-A22B-Thinking-2507 uses rope_theta=5000000.
@@ -84,10 +85,7 @@ PERF_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 1
    --use-dynamic-batch-size
-   # Doubled from 8192 → 16384 for the 32K-context variant.
-   # Effective cap = CP × max_tokens_per_gpu = 2 × 16384 = 32K.
-   # Activation memory roughly doubles per rank — within ~110 GB H200 headroom.
-   --max-tokens-per-gpu 16384
+   --max-tokens-per-gpu 8192
 )
 
 GRPO_ARGS=(
@@ -149,7 +147,7 @@ MEGATRON_LM_PATH="${MEGATRON_LM_PATH:-/root/Megatron-LM}"
 RUNTIME_ENV_JSON=$(cat <<EOF
 {
   "env_vars": {
-    "PYTHONPATH": "${MEGATRON_LM_PATH}:${SCRIPT_DIR}:${FULLY_ASYNC_DIR}:${SLIME_ROOT}",
+    "PYTHONPATH": "${MEGATRON_LM_PATH}:${EXAMPLE_DIR}:${SCRIPT_DIR}:${FULLY_ASYNC_DIR}:${SLIME_ROOT}",
     "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     "NCCL_NVLS_ENABLE": "${HAS_NVLINK}",
     "MODAL_CONFIG_PATH": "${MODAL_CONFIG_PATH}",

@@ -38,13 +38,38 @@ the retool example are in [Comparison vs. retool](#comparison-vs-retool).
 coding_sandbox.py             Modal-backed per-instance sandbox library
 generate_with_codingagent.py  Slime custom-generate hook: prompt build,
                               tool-call parser, multi-turn agent loop, reward
-smoke_test_sandbox.py         End-to-end sandbox lifecycle test (one real
+add_slime_metrics.py          ContextVar-based per-tool / per-sandbox /
+                              swebench-outcome / policy-staleness instrumentation
+                              + custom_rollout_log_function for wandb
+smoke_test_sandbox.py         End-to-end sandbox lifecycle test (real
                               Epoch AI image, ~30s including image pull)
 test_codingagent.py           Parser + observation + dispatch unit tests
+test_add_slime_metrics.py     22 unit tests for the metrics wrapper
 gen_prompt_data.py            Pulls N SWE-bench Verified instances into JSONL
-run_swe.sh                    Inner ray-job submitter (slime + SGLang flags)
-run_swe.sbatch                Slurm wrapper that brings up Ray on 12 H200 nodes
-                              and invokes run_swe.sh
+run_swe.sh                    Canonical launcher (64K context: TP=4 PP=2 CP=4)
+run_swe.sbatch                Slurm wrapper for the canonical launcher
+
+results/                      Per-run result packages (one subdir per run)
+└── swe-env-64k-30045/        Latest 20-rollout run with add_slime_metrics
+    ├── README.md, RESULTS.md, metrics.json, metrics_report.txt,
+    └── compile_metrics_json.py, render_metrics_report.py
+
+context-scaling/              16K / 32K / 64K / 128K context-cap experiments
+├── run_swe_16k.{sh,sbatch}   baseline (TP=4 PP=4 CP=2, max_tok/gpu=8K)
+├── run_swe_32k.{sh,sbatch}   (TP=4 PP=4 CP=2, max_tok/gpu=16K)
+├── run_swe_64k.{sh,sbatch}   (TP=4 PP=2 CP=4, max_tok/gpu=16K) — same config
+                              promoted to top-level run_swe.sh
+├── run_swe_128k.{sh,sbatch}  (TP=4 PP=2 CP=4, max_tok/gpu=32K) — stretch
+├── COMPARISON.md             cross-tier headline + analysis
+└── README.md
+
+pd/                           Prefill/Decode-disaggregated variant
+├── run_swe_pd.{sh,sbatch}    64K config + --sglang-config sglang_pd.yaml
+├── sglang_pd.yaml            5 prefill × TP=8 + 3 decode × TP=8 layout
+├── mooncake_ib_per_gpu.json  per-GPU HCA binding (workaround for
+                              get_ib_devices_for_gpu comma-list parser bug)
+└── README.md                 STATUS: blocked on upstream Mooncake PD bug
+                              (see mnt/mooncake_bug_report/BUG_REPORT.md)
 ```
 
 ## Sandbox design (`coding_sandbox.py`)

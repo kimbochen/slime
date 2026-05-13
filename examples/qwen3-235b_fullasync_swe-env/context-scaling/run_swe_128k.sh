@@ -26,7 +26,8 @@ if [ "$NVLINK_COUNT" -gt 0 ]; then HAS_NVLINK=1; else HAS_NVLINK=0; fi
 echo "HAS_NVLINK: $HAS_NVLINK"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-SLIME_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
+EXAMPLE_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
+SLIME_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
 FULLY_ASYNC_DIR="${SLIME_ROOT}/examples/fully_async"
 
 # Qwen3-235B-A22B-Thinking-2507 uses rope_theta=5000000.
@@ -85,13 +86,17 @@ PERF_ARGS=(
    --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
    --sequence-parallel
-   # No --decoder-last-pipeline-num-layers: PP=2 splits evenly (47 / 47),
-   # the uneven-split tuning from PP=4 doesn't apply.
    --recompute-granularity full
    --recompute-method uniform
    --recompute-num-layers 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 16384
+   # 32768 × CP=4 = 128K effective context cap. Activation memory ~doubles
+   # vs. the 64K variant; combined with PP=2 per-stage weight footprint
+   # (~30 GB BF16 + grads), per-rank usage approaches the H200 envelope.
+   # First-run OOM is a real possibility — fallback is to drop to 24576
+   # (~96K cap) or re-enable PP=4 with CP=8 (CP=8 needs more ranks; world
+   # must be reshaped to TP=2 PP=2 CP=8 = 32 instead).
+   --max-tokens-per-gpu 32768
 )
 
 GRPO_ARGS=(
@@ -153,7 +158,7 @@ MEGATRON_LM_PATH="${MEGATRON_LM_PATH:-/root/Megatron-LM}"
 RUNTIME_ENV_JSON=$(cat <<EOF
 {
   "env_vars": {
-    "PYTHONPATH": "${MEGATRON_LM_PATH}:${SCRIPT_DIR}:${FULLY_ASYNC_DIR}:${SLIME_ROOT}",
+    "PYTHONPATH": "${MEGATRON_LM_PATH}:${EXAMPLE_DIR}:${SCRIPT_DIR}:${FULLY_ASYNC_DIR}:${SLIME_ROOT}",
     "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     "NCCL_NVLS_ENABLE": "${HAS_NVLINK}",
     "MODAL_CONFIG_PATH": "${MODAL_CONFIG_PATH}",

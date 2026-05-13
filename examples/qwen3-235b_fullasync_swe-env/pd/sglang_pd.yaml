@@ -1,0 +1,36 @@
+# Prefill / Decode disaggregation for the Qwen3-235B-A22B-Thinking retool example.
+#
+# Targets a 64-GPU rollout pool with a 5:3 prefill-heavy split.
+#
+#  prefill: 40 GPUs (5 nodes) → 5 engines × TP=8
+#  decode:  24 GPUs (3 nodes) → 3 engines × TP=8
+#
+# KV cache flows prefill → decode over Mooncake/IB. With Qwen3-235B's
+# ~188 KB/token KV (94 layers × 4 KV heads × 128 head_dim × 2 bytes × 2),
+# an 8 K-token prompt's KV transfer is ~1.5 GB — ~15 ms over 100 Gb IB.
+# A 16 K-token eval prompt is ~3 GB → ~30 ms, still well under per-decode-token
+# latency.
+#
+# Both groups inherit the global --sglang-* CLI args from run_async.sh:
+# dp_size=8, ep_size=4, enable_dp_attention=True. The ep_size=4 is REQUIRED
+# for FP8 block-alignment of the Qwen3-235B-Thinking-2507-FP8 MoE shards
+# (block_n=128 vs. moe_ffn_hidden=1536); changing it re-introduces the
+# "output_size=192 not divisible by block_n=128" crash that bit run 29654.
+#
+# Use with:
+#   --sglang-config <path-to-this-file>
+#   --rollout-num-gpus 64
+#
+# Referenced from run_async.sh when toggling PD disagg on.
+
+sglang:
+  - name: actor
+    # model_path defaults to --hf-checkpoint, update_weights auto-inferred true
+    num_gpus_per_engine: 8
+    server_groups:
+      - worker_type: prefill
+        num_gpus: 40
+        num_gpus_per_engine: 8
+      - worker_type: decode
+        num_gpus: 24
+        num_gpus_per_engine: 8

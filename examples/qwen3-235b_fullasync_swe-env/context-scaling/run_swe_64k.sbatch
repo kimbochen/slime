@@ -8,14 +8,14 @@
 # Submit from slime repo root:
 #   sbatch examples/qwen3-235b_fullasync_swe-env/run_swe.sbatch
 #
-#SBATCH --job-name=infx-swe-32k
+#SBATCH --job-name=infx-swe-64k
 #SBATCH --nodes=12
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-task=128
 #SBATCH --time=24:00:00
-#SBATCH --output=mnt/logs/infx-swe-32k-%j.out
-#SBATCH --error=mnt/logs/infx-swe-32k-%j.err
+#SBATCH --output=mnt/logs/infx-swe-64k-%j.out
+#SBATCH --error=mnt/logs/infx-swe-64k-%j.err
 
 set -ex
 
@@ -56,7 +56,7 @@ srun --nodes=1 --ntasks=1 --nodelist="$HEAD" \
      --container-image="$CONTAINER_IMAGE" \
      --container-mounts="$CONTAINER_MOUNTS" \
      --container-workdir=/root/slime \
-     --output="${LOGDIR}/infx-swe-32k-${JOB}-head.out" \
+     --output="${LOGDIR}/infx-swe-64k-${JOB}-head.out" \
      bash -c "${RAY_BOOT} && ray start --head \
                        --node-ip-address=${HEAD_IP} \
                        --port=6379 \
@@ -75,7 +75,7 @@ for node in "${NODES[@]:1}"; do
          --container-image="$CONTAINER_IMAGE" \
          --container-mounts="$CONTAINER_MOUNTS" \
          --container-workdir=/root/slime \
-         --output="${LOGDIR}/infx-swe-32k-${JOB}-${node}.out" \
+         --output="${LOGDIR}/infx-swe-64k-${JOB}-${node}.out" \
          bash -c "${RAY_BOOT} && ray start --address=${HEAD_IP}:6379 \
                            --num-gpus=8 \
                            --disable-usage-stats \
@@ -90,7 +90,7 @@ srun --nodes=1 --ntasks=1 --nodelist="$HEAD" --overlap \
      --container-mounts="$CONTAINER_MOUNTS" \
      --container-workdir=/root/slime \
      --export=ALL,NUM_ROLLOUT="${NUM_ROLLOUT:-200}",ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-4}",MODAL_CONFIG_PATH="${MODAL_CONFIG_PATH}" \
-     bash examples/qwen3-235b_fullasync_swe-env/run_swe_32k.sh "${HEAD_IP}"
+     bash examples/qwen3-235b_fullasync_swe-env/context-scaling/run_swe_64k.sh "${HEAD_IP}"
 
 echo "Training command finished — stopping Ray cluster."
 srun --ntasks-per-node=1 --overlap \

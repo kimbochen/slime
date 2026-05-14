@@ -148,13 +148,39 @@ def _new_bucket() -> dict:
 async def generate(args, sample: Sample, sampling_params) -> Sample:
     # Mirror the retool wrapper: reset accumulated state so re-dispatched
     # samples (after weight-update aborts) don't carry stale token lists.
-    sample.rollout_log_probs = None
-    sample.tokens = []
-    sample.response_length = 0
-    sample.response = ""
-    sample.loss_mask = []
+    #
+    # EXCEPTION: when --partial-rollout is enabled, slime intentionally
+    # carries the partial tokens/response/loss_mask across the
+    # abort+re-dispatch cycle so the agent can resume. Clearing them
+    # here would defeat partial-rollout entirely (and silently — any
+    # resume-detection logic checks response_length > 0, which we'd
+    # nuke). This guard is defensive: the base agent in this example
+    # has an `assert not args.partial_rollout` of its own, but keeping
+    # the wrapper consistent with the resumable variant avoids subtle
+    # bugs if anyone disables that assert.
+    if not getattr(args, "partial_rollout", False):
+        sample.rollout_log_probs = None
+        sample.tokens = []
+        sample.response_length = 0
+        sample.response = ""
+        sample.loss_mask = []
 
-    sample.policy_version_at_dispatch = _consumer_version
+    # NOTE: store cross-dispatch counters in sample.metadata. Plain
+    # attributes (sample.foo = ...) are stripped by Ray serialization when
+    # slime puts samples back into the buffer for partial-rollout — only
+    # declared dataclass fields like sample.metadata survive the round
+    # trip. Lifting these into metadata makes them actually preserved
+    # across abort+re-dispatch cycles.
+    if sample.metadata is None:
+        sample.metadata = {}
+
+    # Sticky-on-first-dispatch policy version stamp.
+    if "policy_version_at_dispatch" not in sample.metadata:
+        sample.metadata["policy_version_at_dispatch"] = _consumer_version
+
+    # Track re-dispatch count. resume_count == 0 means fresh dispatch;
+    # >= 1 means re-dispatched at least once after a prior abort.
+    sample.metadata["resume_count"] = sample.metadata.get("resume_count", -1) + 1
 
     bucket = _new_bucket()
     token = _sample_metrics.set(bucket)
@@ -258,13 +284,36 @@ def custom_rollout_log_function(
     # 5) SWE-bench outcomes
     log_dict |= _aggregate_swebench_outcomes(samples)
 
-    # 6) Policy staleness — max-per-sample = consumer_rollout_id - first_turn_version.
-    versions = [getattr(s, "policy_version_at_dispatch", rollout_id) for s in samples]
-    stalenesses = [max(0, rollout_id - v) for v in versions]
+    # 6) Policy staleness — measured in WEIGHT VERSIONS (not rollouts).
+    # With --update-weights-interval=N, the policy only changes every N
+    # rollouts; samples dispatched and consumed within the same N-rollout
+    # window are 0 weight-versions stale, not (delta-rollouts) stale.
+    #
+    # Stamps live in sample.metadata so they survive Ray serialization
+    # on partial-rollout re-dispatch cycles.
+    interval = max(1, getattr(args, "update_weights_interval", 1) or 1)
+    versions = [
+        (s.metadata or {}).get("policy_version_at_dispatch", rollout_id)
+        for s in samples
+    ]
+    stalenesses = [
+        max(0, (rollout_id // interval) - (v // interval)) for v in versions
+    ]
     if stalenesses:
         log_dict |= dict_add_prefix(
             compute_statistics(stalenesses), "policy_staleness/"
         )
+
+    # 7) Resume counts — direct signal that the sample was re-dispatched.
+    # Read from metadata for the same Ray-serialization reason.
+    resume_counts = [
+        (s.metadata or {}).get("resume_count", 0) for s in samples
+    ]
+    if resume_counts:
+        log_dict |= dict_add_prefix(
+            compute_statistics(resume_counts), "resume_count/"
+        )
+        log_dict["resume_count/n_resumed"] = sum(1 for c in resume_counts if c > 0)
 
     # Bump `_consumer_version` so samples dispatched after this point are
     # stamped with the post-update-weights policy version.

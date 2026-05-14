@@ -54,10 +54,23 @@ def main():
         help="Max instances to take from any single repo (default: %(default)s); "
              "set to 0 to disable balancing.",
     )
+    ap.add_argument(
+        "--source",
+        choices=["verified", "lite"],
+        default="verified",
+        help="Which SWE-bench split to pull from. 'lite' (300 instances) is "
+             "filtered to simpler patches; 'verified' (500 instances) is the "
+             "human-validated curation. Both are subsets of the original "
+             "SWE-bench, so Epoch AI's per-instance Docker images cover both.",
+    )
     args = ap.parse_args()
 
-    ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
-    print(f"Loaded {len(ds)} Verified instances from princeton-nlp/SWE-bench_Verified")
+    dataset_path = {
+        "verified": "princeton-nlp/SWE-bench_Verified",
+        "lite":     "princeton-nlp/SWE-bench_Lite",
+    }[args.source]
+    ds = load_dataset(dataset_path, split="test")
+    print(f"Loaded {len(ds)} instances from {dataset_path}")
 
     seen: dict[str, int] = {}
     picks = []

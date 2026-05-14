@@ -43,7 +43,7 @@ CKPT_ARGS=(
 )
 
 DATA_ROOT="${DATA_ROOT:-${SLIME_ROOT}/mnt/data}"
-PROMPT_DATA="${PROMPT_DATA:-${DATA_ROOT}/swebench_verified/sample_10.jsonl}"
+PROMPT_DATA="${PROMPT_DATA:-${DATA_ROOT}/swebench_lite/sample_40.jsonl}"
 
 # SWE-bench rollouts are heavy (multi-turn, long observations); smaller
 # rollout-batch + fewer samples per prompt to keep step time tractable.
@@ -209,6 +209,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-gpus-per-node 8 \
    --rollout-num-gpus 64 \
    --update-weight-buffer-size $(( 1024 * 1024 * 1024 * 4 )) \
+   --update-weights-interval 5 \
    "${MODEL_ARGS[@]}" \
    "${CKPT_ARGS[@]}" \
    "${ROLLOUT_ARGS[@]}" \

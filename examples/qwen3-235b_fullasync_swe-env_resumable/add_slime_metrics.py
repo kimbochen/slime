@@ -162,16 +162,23 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         sample.response = ""
         sample.loss_mask = []
 
-    # Sticky-on-first-dispatch policy version stamp. Without this, every
-    # resume would overwrite the stamp with the current version, and the
-    # reported staleness would always be 0 (current - current).
-    if not hasattr(sample, "policy_version_at_dispatch") or sample.policy_version_at_dispatch is None:
-        sample.policy_version_at_dispatch = _consumer_version
+    # NOTE: store cross-dispatch counters in sample.metadata. Plain
+    # attributes (sample.foo = ...) are stripped by Ray serialization when
+    # slime puts samples back into the buffer for partial-rollout — only
+    # declared dataclass fields like sample.metadata survive the
+    # serialize+deserialize round trip. So we lift these into metadata to
+    # actually preserve them across re-dispatch cycles.
+    if sample.metadata is None:
+        sample.metadata = {}
 
-    # Track how many times this sample has entered generate() — a direct
-    # signal that partial-rollout actually fired (resume_count >= 1 means
-    # the sample was re-dispatched after an abort).
-    sample.resume_count = getattr(sample, "resume_count", -1) + 1
+    # Sticky-on-first-dispatch policy version stamp. Stored in metadata so
+    # the stamp survives Ray serialization on partial-rollout cycles.
+    if "policy_version_at_dispatch" not in sample.metadata:
+        sample.metadata["policy_version_at_dispatch"] = _consumer_version
+
+    # Direct signal that partial-rollout actually fired. resume_count == 0
+    # means fresh dispatch; >= 1 means re-dispatched after a prior abort.
+    sample.metadata["resume_count"] = sample.metadata.get("resume_count", -1) + 1
 
     bucket = _new_bucket()
     token = _sample_metrics.set(bucket)
@@ -275,11 +282,23 @@ def custom_rollout_log_function(
     # 5) SWE-bench outcomes
     log_dict |= _aggregate_swebench_outcomes(samples)
 
-    # 6) Policy staleness — max-per-sample = consumer_rollout_id - FIRST_dispatch_version.
-    # NOTE: stamp is sticky-on-first-dispatch (set above in generate-wrapper),
-    # so this correctly reports staleness across resume cycles.
-    versions = [getattr(s, "policy_version_at_dispatch", rollout_id) for s in samples]
-    stalenesses = [max(0, rollout_id - v) for v in versions]
+    # 6) Policy staleness — measured in WEIGHT VERSIONS (not rollouts).
+    # With --update-weights-interval=N, the policy only changes every N
+    # rollouts. A sample dispatched at rollout 3 and consumed at rollout 6
+    # under interval=5 is 0 weight-versions stale (both fall in the v0
+    # window [0..4]), not 3 rollouts stale.
+    #
+    # Stamp is sticky-on-first-dispatch (set above in generate-wrapper)
+    # and stored in sample.metadata so it survives Ray serialization on
+    # partial-rollout re-dispatch cycles.
+    interval = max(1, getattr(args, "update_weights_interval", 1) or 1)
+    versions = [
+        (s.metadata or {}).get("policy_version_at_dispatch", rollout_id)
+        for s in samples
+    ]
+    stalenesses = [
+        max(0, (rollout_id // interval) - (v // interval)) for v in versions
+    ]
     if stalenesses:
         log_dict |= dict_add_prefix(
             compute_statistics(stalenesses), "policy_staleness/"
@@ -287,10 +306,11 @@ def custom_rollout_log_function(
 
     # 7) Resume counts — direct signal that partial-rollout fired.
     # resume_count = (number of generate() calls for this sample) - 1
-    # So resume_count == 0 means fresh dispatch; >= 1 means re-dispatched
-    # after at least one abort. This is the ground truth that
-    # policy_staleness was trying to surface.
-    resume_counts = [getattr(s, "resume_count", 0) for s in samples]
+    # Stored in sample.metadata so it survives Ray serialization across
+    # the abort+re-dispatch cycle.
+    resume_counts = [
+        (s.metadata or {}).get("resume_count", 0) for s in samples
+    ]
     if resume_counts:
         log_dict |= dict_add_prefix(
             compute_statistics(resume_counts), "resume_count/"

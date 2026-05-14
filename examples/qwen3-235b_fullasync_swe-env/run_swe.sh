@@ -208,6 +208,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-gpus-per-node 8 \
    --rollout-num-gpus 64 \
    --update-weight-buffer-size $(( 1024 * 1024 * 1024 * 4 )) \
+   --update-weights-interval 5 \
    "${MODEL_ARGS[@]}" \
    "${CKPT_ARGS[@]}" \
    "${ROLLOUT_ARGS[@]}" \

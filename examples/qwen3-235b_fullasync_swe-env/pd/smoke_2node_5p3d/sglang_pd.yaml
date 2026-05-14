@@ -1,0 +1,26 @@
+# 2-node PD with the EXACT 5:3 prefill:decode ratio of the 12-node
+# pd/run_swe_pd_upstream.yaml, scaled down by 4× (TP=2 each instead of TP=8).
+#
+#   prefill: 10 GPUs → 5 engines × TP=2
+#   decode:   6 GPUs → 3 engines × TP=2
+#   total:   16 GPUs (2 nodes × 8 GPUs, --colocate)
+#
+# Diagnostic: builds on smoke_2node_3p1d's success (4 engines, 3:1 ratio).
+# This run tests 8 engines at the exact 5:3 ratio. If it works → 12-node
+# failure is about model (MoE Qwen3-235B), async path, or non-colocate —
+# not about engine count or ratio. If it fails with KVTransferError → 8
+# engines is the magic number where multi-engine PD breaks.
+sglang:
+  - name: actor
+    num_gpus_per_engine: 2
+    server_groups:
+      - worker_type: prefill
+        num_gpus: 10
+        num_gpus_per_engine: 2
+        overrides:
+          disaggregation_transfer_backend: mooncake
+      - worker_type: decode
+        num_gpus: 6
+        num_gpus_per_engine: 2
+        overrides:
+          disaggregation_transfer_backend: mooncake

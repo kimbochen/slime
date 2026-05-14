@@ -26,7 +26,8 @@ if [ "$NVLINK_COUNT" -gt 0 ]; then HAS_NVLINK=1; else HAS_NVLINK=0; fi
 echo "HAS_NVLINK: $HAS_NVLINK"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-SLIME_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
+EXAMPLE_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
+SLIME_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
 FULLY_ASYNC_DIR="${SLIME_ROOT}/examples/fully_async"
 
 # Qwen3-235B-A22B-Thinking-2507 uses rope_theta=5000000.
@@ -57,21 +58,14 @@ ROLLOUT_ARGS=(
    --reward-key score
 
    --num-rollout "${NUM_ROLLOUT:-200}"
-   --rollout-batch-size "${ROLLOUT_BATCH_SIZE:-8}"
-   --n-samples-per-prompt 8
+   --rollout-batch-size "${ROLLOUT_BATCH_SIZE:-4}"
+   --n-samples-per-prompt 4
    --rollout-max-response-len 32768
    --rollout-temperature 1.0
 
    # global = rollout_batch_size × n_samples_per_prompt
-   --global-batch-size 64
+   --global-batch-size 16
    --balance-data
-
-   # NOT setting --partial-rollout: the SWE-bench agent in
-   # generate_with_codingagent.py has an explicit assert that rejects it
-   # (line 290 — "Partial rollout not supported"). The agent state machine
-   # (tool-call loop with sandbox state) can't safely resume mid-trajectory.
-   # Pipeline-RL behavior would require modifying the agent to checkpoint
-   # and restore mid-call state.
 )
 
 # Eval disabled for the bring-up — the 10-instance training set IS the eval.
@@ -99,17 +93,6 @@ PERF_ARGS=(
    --recompute-num-layers 1
    --use-dynamic-batch-size
    --max-tokens-per-gpu 16384
-
-   # Override the model script's default --moe-token-dispatcher-type alltoall
-   # with flex (required by the deepep backend below). DeepEP is Megatron's
-   # high-throughput MoE all-to-all backend; faster than alltoall on H200 for
-   # the 128-expert + topk=8 Qwen3-235B routing pattern. Argparse later-wins
-   # means these override the values in scripts/models/qwen3-235B-A22B.sh.
-   # NOTE: --moe-enable-deepep is the OLD spelling, deprecated by Megatron in
-   # favour of --moe-flex-dispatcher-backend=deepep (which is what enable-deepep
-   # auto-sets under the hood). Using the new name to silence the warning.
-   --moe-token-dispatcher-type flex
-   --moe-flex-dispatcher-backend deepep
 )
 
 GRPO_ARGS=(
@@ -134,18 +117,35 @@ OPTIMIZER_ARGS=(
 )
 
 SGLANG_ARGS=(
+   # PD-disaggregated rollout, upstream-aligned. The four load-bearing
+   # differences from sglang_pd.yaml / run_swe_pd.sh (which we couldn't get
+   # to pair prefill↔decode) come from upstream slime's
+   # tests/test_glm4.7_30B_A3B_pd_mooncake.py — the only working PD
+   # reference in slime's own test suite:
+   #
+   #   1. Per-engine `overrides: {disaggregation_transfer_backend: mooncake}`
+   #      in the YAML (sglang_pd_upstream.yaml) — sets the backend at the
+   #      individual-engine level rather than relying on the top-level
+   #      sglang-disaggregation-transfer-backend flag alone.
+   #   2. Explicit --sglang-disaggregation-transfer-backend mooncake on the
+   #      CLI as well. Belt-and-suspenders — upstream sets both.
+   #   3. Long --sglang-watchdog-timeout + --sglang-router-request-timeout
+   #      (upstream uses 1200s). Multi-turn SWE-bench rollouts can hold a
+   #      decode request open for minutes; the 60s sglang defaults would
+   #      kill it mid-tool-call and surface as "engine hung".
+   #   4. NO --sglang-mooncake-ib-device. Our per-GPU JSON map was the wrong
+   #      hypothesis — upstream's working test relies on auto-discovery.
+   #      The mooncake_transfer_engine.py "old format" bug we hit earlier
+   #      was real but a red herring for the prefill↔decode pairing failure.
+   --sglang-config "${SCRIPT_DIR}/sglang_pd_upstream.yaml"
    --rollout-num-gpus-per-engine 8
    --sglang-mem-fraction-static 0.85
    --sglang-enable-dp-attention
    --sglang-dp-size 8
    --sglang-ep-size 4
-   # Cap SGLang's per-request context at 64K to match the trainer's
-   # effective context window (CP × max_tokens_per_gpu = 4 × 16384). Without
-   # this, SGLang defaults to Qwen3-235B's full max-position-embeddings
-   # (262K), and a long-thinking sample could exceed what the trainer is
-   # sized to process. Aligns the two caps so any over-cap rollout fails
-   # cleanly at the engine instead of mysteriously breaking the trainer.
-   --sglang-context-length 65536
+   --sglang-disaggregation-transfer-backend mooncake
+   --sglang-watchdog-timeout 1200
+   --sglang-router-request-timeout-secs 1200
 )
 
 MISC_ARGS=(
@@ -178,7 +178,7 @@ MEGATRON_LM_PATH="${MEGATRON_LM_PATH:-/root/Megatron-LM}"
 RUNTIME_ENV_JSON=$(cat <<EOF
 {
   "env_vars": {
-    "PYTHONPATH": "${MEGATRON_LM_PATH}:${SCRIPT_DIR}:${FULLY_ASYNC_DIR}:${SLIME_ROOT}",
+    "PYTHONPATH": "${MEGATRON_LM_PATH}:${EXAMPLE_DIR}:${SCRIPT_DIR}:${FULLY_ASYNC_DIR}:${SLIME_ROOT}",
     "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     "NCCL_NVLS_ENABLE": "${HAS_NVLINK}",
     "MODAL_CONFIG_PATH": "${MODAL_CONFIG_PATH}",

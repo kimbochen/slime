@@ -43,6 +43,8 @@ from slime.rollout.sglang_rollout import GenerateState
 from slime.utils.http_utils import post
 from slime.utils.types import Sample
 
+import uuid
+
 from coding_sandbox import CodingSandbox, CodingSandboxPool, get_pool
 
 # ---------------------------------------------------------------------------
@@ -284,11 +286,48 @@ def _format_initial_prompt(tokenizer, prompt: str) -> list[int]:
     )
 
 
-async def generate(args, sample: Sample, sampling_params) -> Sample:
-    """Run one SWE-bench-Verified rollout: open a sandbox, agent-loop until
-    submit / max_turns / length truncation, return the full token trace."""
-    assert not args.partial_rollout, "Partial rollout not supported."
+def _get_or_init_resume_key(sample: Sample, instance_id: str) -> str:
+    """Resume key persisted in `sample.metadata` so slime's partial-rollout
+    machinery can find the parked sandbox across abort+re-dispatch cycles.
 
+    slime preserves `sample.metadata` (a dict) across the abort+resume
+    flow, so anything we stash there comes back on the next generate()
+    call for the same sample.
+    """
+    if sample.metadata is None:
+        sample.metadata = {}
+    key = sample.metadata.get("sandbox_resume_key")
+    if not key:
+        # 8-byte hex collision space is plenty for typical rollout batches.
+        key = f"{instance_id}_{uuid.uuid4().hex[:12]}"
+        sample.metadata["sandbox_resume_key"] = key
+    return key
+
+
+async def generate(args, sample: Sample, sampling_params) -> Sample:
+    """Run one SWE-bench-Verified rollout: open (or resume) a sandbox,
+    agent-loop until submit / max_turns / length truncation, return the
+    full token trace.
+
+    RESUMABLE: if slime aborts this sample mid-trajectory (e.g., a weight
+    update fires during model generation), the sandbox is PARKED rather
+    than terminated. The sample carries the resume key in metadata, the
+    partial response in sample.tokens / sample.response / sample.loss_mask.
+    On re-dispatch (with --partial-rollout enabled), the agent picks up
+    the parked sandbox (filesystem state intact), restores its local
+    accumulators from the sample, and continues the loop from the next
+    turn under the new policy weights.
+
+    Atomic-turn semantics: abort can only fire DURING the
+    `await post(url, ...)` SGLang call (tool execution is local). So the
+    state at abort-time is always:
+      • Model output for THIS turn is partial (or empty if abort hit early)
+      • All tool calls from PRIOR turns have already executed
+      • Sandbox filesystem reflects all prior tool effects
+    The partial model output for the in-progress turn IS preserved (slime
+    returns the SGLang partial-text via output["text"]), so on resume the
+    conversation continues with that text already present.
+    """
     instance_id = sample.label if isinstance(sample.label, str) else None
     if not instance_id:
         # Hard failure: caller must supply instance_id via label.
@@ -305,103 +344,155 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
     prompt_tokens_ids = _format_initial_prompt(state.tokenizer, sample.prompt)
     prompt_text = state.tokenizer.decode(prompt_tokens_ids)
 
-    response = ""
-    response_token_ids: list[int] = []
-    loss_masks: list[int] = []
-    tool_call_count = 0
+    # ---- Resume detection + state reconstruction ----
+    # We're in "resume mode" if (a) --partial-rollout is on AND (b) the
+    # sample already has response tokens from a prior aborted dispatch.
+    is_resume = (
+        getattr(args, "partial_rollout", False)
+        and sample.response_length > 0
+        and sample.tokens
+        and sample.loss_mask
+    )
+    if is_resume:
+        # Restore agent-local accumulators from the sample. The sample's
+        # tokens are prompt + accumulated response; strip the prompt.
+        response_token_ids = list(sample.tokens[len(prompt_tokens_ids):])
+        response = sample.response or state.tokenizer.decode(response_token_ids)
+        loss_masks = list(sample.loss_mask)
+        # We can't perfectly reconstruct tool_call_count from text alone,
+        # but the model's behavior doesn't depend on it; only the
+        # max_tool_calls cap does. Counting <tool_call> tags in the
+        # response is a decent approximation.
+        tool_call_count = response.count("<tool_call>")
+    else:
+        response = ""
+        response_token_ids = []
+        loss_masks = []
+        tool_call_count = 0
     submitted = False
 
     pool: CodingSandboxPool = get_pool()
+    resume_key = _get_or_init_resume_key(sample, instance_id)
+    sandbox, resumed = await pool.acquire_or_resume(
+        instance_id, resume_key=resume_key
+    )
+    # Tracks whether we should park (mid-trajectory abort) or release
+    # (normal completion / non-recoverable failure) on the way out.
+    park_on_exit = False
+    output: dict | None = None
     try:
-        async with pool.session(instance_id) as sandbox:
-            for turn in range(TOOL_CONFIGS["max_turns"]):
-                # Per-turn context budget. SGLang rejects requests where
-                # prompt + max_new_tokens exceeds context_length, so we
-                # have to cap max_new_tokens dynamically by what's left.
-                total_length = len(prompt_tokens_ids) + len(response_token_ids)
-                if args.rollout_max_context_len is not None:
-                    max_context_length = args.rollout_max_context_len
-                else:
-                    max_context_length = args.context_parallel_size * args.max_tokens_per_gpu
+        for turn in range(TOOL_CONFIGS["max_turns"]):
+            # Per-turn context budget. SGLang rejects requests where
+            # prompt + max_new_tokens exceeds context_length, so we have
+            # to cap max_new_tokens dynamically by what's left.
+            total_length = len(prompt_tokens_ids) + len(response_token_ids)
+            if args.rollout_max_context_len is not None:
+                max_context_length = args.rollout_max_context_len
+            else:
+                max_context_length = args.context_parallel_size * args.max_tokens_per_gpu
 
-                SAFETY_MARGIN = 64        # special tokens / BOS slop
-                MIN_VIABLE_COMPLETION = 256
-                remaining = max_context_length - total_length - SAFETY_MARGIN
-                if remaining < MIN_VIABLE_COMPLETION:
-                    sample.status = Sample.Status.TRUNCATED
-                    break
+            SAFETY_MARGIN = 64        # special tokens / BOS slop
+            MIN_VIABLE_COMPLETION = 256
+            remaining = max_context_length - total_length - SAFETY_MARGIN
+            if remaining < MIN_VIABLE_COMPLETION:
+                sample.status = Sample.Status.TRUNCATED
+                break
 
-                per_turn_sp = dict(sampling_params)
-                per_turn_sp["max_new_tokens"] = min(
-                    sampling_params.get("max_new_tokens", remaining),
-                    remaining,
-                )
+            per_turn_sp = dict(sampling_params)
+            per_turn_sp["max_new_tokens"] = min(
+                sampling_params.get("max_new_tokens", remaining),
+                remaining,
+            )
 
-                payload = {
-                    "input_ids": prompt_tokens_ids + response_token_ids,
-                    "sampling_params": per_turn_sp,
-                    "return_logprob": True,
-                }
-                output = await post(url, payload)
+            payload = {
+                "input_ids": prompt_tokens_ids + response_token_ids,
+                "sampling_params": per_turn_sp,
+                "return_logprob": True,
+            }
+            output = await post(url, payload)
 
-                if output["meta_info"]["finish_reason"]["type"] == "abort":
-                    sample.status = Sample.Status.ABORTED
-                    return sample
-
+            # ---- Abort handling: keep partial output, park sandbox ----
+            finish_type = output["meta_info"]["finish_reason"]["type"]
+            if finish_type == "abort":
+                # Capture whatever partial tokens SGLang produced before
+                # the abort. This is the "partial" in partial-rollout.
                 if "output_token_logprobs" in output["meta_info"]:
-                    cur_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+                    cur_ids = [it[1] for it in output["meta_info"]["output_token_logprobs"]]
                     cur_text = state.tokenizer.decode(cur_ids)
-                    cur_lp = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+                    cur_lp = [it[0] for it in output["meta_info"]["output_token_logprobs"]]
                     if sample.rollout_log_probs is None:
                         sample.rollout_log_probs = []
                     sample.rollout_log_probs += cur_lp
                 else:
-                    cur_text = postprocess_response(output["text"])
-                    cur_ids = state.tokenizer(cur_text, add_special_tokens=False)["input_ids"]
-
+                    cur_text = postprocess_response(output.get("text", ""))
+                    cur_ids = (
+                        state.tokenizer(cur_text, add_special_tokens=False)["input_ids"]
+                        if cur_text else []
+                    )
                 response += cur_text
                 response_token_ids += cur_ids
                 loss_masks += [1] * len(cur_ids)
+                sample.status = Sample.Status.ABORTED
+                # Park ONLY if --partial-rollout is on; otherwise old
+                # behaviour (drop the sandbox on the way out) is correct.
+                park_on_exit = bool(getattr(args, "partial_rollout", False))
+                break
 
-                # Length truncation ends the trajectory.
-                if output["meta_info"]["finish_reason"]["type"] == "length":
-                    break
+            if "output_token_logprobs" in output["meta_info"]:
+                cur_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+                cur_text = state.tokenizer.decode(cur_ids)
+                cur_lp = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+                if sample.rollout_log_probs is None:
+                    sample.rollout_log_probs = []
+                sample.rollout_log_probs += cur_lp
+            else:
+                cur_text = postprocess_response(output["text"])
+                cur_ids = state.tokenizer(cur_text, add_special_tokens=False)["input_ids"]
 
-                name, arguments = parse_tool_call(cur_text)
-                if name is None:
-                    # No tool call — model went off-script. Nudge it back.
-                    next_obs = _qwen_observation(
-                        '<error>I could not parse a tool call. Emit one '
-                        '<tool_call>{"name": "...", "arguments": {...}}</tool_call> '
-                        'block. When done, call submit.</error>'
-                    )
-                    done = False
-                else:
-                    next_obs, done = await execute_tool(sandbox, name, arguments)
-                    tool_call_count += 1
+            response += cur_text
+            response_token_ids += cur_ids
+            loss_masks += [1] * len(cur_ids)
 
-                if done:
-                    submitted = True
-                    break
+            # Length truncation ends the trajectory.
+            if finish_type == "length":
+                break
 
-                assert next_obs, "Observation must be non-empty for an open turn."
-                obs_ids = state.tokenizer(next_obs, add_special_tokens=False)["input_ids"]
-                response += next_obs
-                response_token_ids += obs_ids
-                loss_masks += [0] * len(obs_ids)
+            name, arguments = parse_tool_call(cur_text)
+            if name is None:
+                # No tool call — model went off-script. Nudge it back.
+                next_obs = _qwen_observation(
+                    '<error>I could not parse a tool call. Emit one '
+                    '<tool_call>{"name": "...", "arguments": {...}}</tool_call> '
+                    'block. When done, call submit.</error>'
+                )
+                done = False
+            else:
+                next_obs, done = await execute_tool(sandbox, name, arguments)
+                tool_call_count += 1
 
-                if sample.rollout_log_probs is not None:
-                    sample.rollout_log_probs += [0.0] * len(obs_ids)
-                    assert len(response_token_ids) == len(sample.rollout_log_probs), (
-                        f"Token/logp length mismatch at turn {turn}"
-                    )
+            if done:
+                submitted = True
+                break
 
-                if tool_call_count >= TOOL_CONFIGS["max_tool_calls"]:
-                    break
+            assert next_obs, "Observation must be non-empty for an open turn."
+            obs_ids = state.tokenizer(next_obs, add_special_tokens=False)["input_ids"]
+            response += next_obs
+            response_token_ids += obs_ids
+            loss_masks += [0] * len(obs_ids)
 
-            # Evaluate inside the SAME sandbox (state is whatever the agent
-            # left it in). The reward signal is stashed on the sample so
-            # reward_func can read it without re-spawning a sandbox.
+            if sample.rollout_log_probs is not None:
+                sample.rollout_log_probs += [0.0] * len(obs_ids)
+                assert len(response_token_ids) == len(sample.rollout_log_probs), (
+                    f"Token/logp length mismatch at turn {turn}"
+                )
+
+            if tool_call_count >= TOOL_CONFIGS["max_tool_calls"]:
+                break
+
+        # Evaluate inside the SAME sandbox only if we DIDN'T abort. On
+        # abort we'll resume later; tests should run only at the actual
+        # end of the trajectory.
+        if not park_on_exit:
             sample._swebench_tests_passed = None
             try:
                 test_res = await sandbox.run_tests()
@@ -410,8 +501,18 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
             except Exception as e:
                 sample._swebench_tests_summary = f"<run_tests crashed: {e}>"
     finally:
-        # pool.session cleans up the sandbox on exit; nothing extra needed.
-        pass
+        if park_on_exit:
+            # Abort mid-trajectory: keep the sandbox alive for resume.
+            # The resume_key is already stashed on sample.metadata.
+            await pool.park(sandbox, resume_key=resume_key)
+        else:
+            # Normal exit: terminate the sandbox and free its slot.
+            await pool.release(sandbox)
+            # Drop the resume_key from metadata so a future fresh dispatch
+            # of the same Sample object doesn't try to resume a defunct
+            # sandbox handle. (Harmless if absent on retry; defensive.)
+            if sample.metadata is not None:
+                sample.metadata.pop("sandbox_resume_key", None)
 
     sample.tokens = prompt_tokens_ids + response_token_ids
     sample.response_length = len(response_token_ids)
@@ -422,7 +523,12 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
     sample.submitted = submitted
 
     if sample.status is None or sample.status == Sample.Status.COMPLETED:
-        match output["meta_info"]["finish_reason"]["type"]:
+        # output is the LAST SGLang response (may be None if we never
+        # entered the loop because of an initial truncation check).
+        finish_type = (
+            output["meta_info"]["finish_reason"]["type"] if output else "stop"
+        )
+        match finish_type:
             case "length":
                 sample.status = Sample.Status.TRUNCATED
             case "abort":

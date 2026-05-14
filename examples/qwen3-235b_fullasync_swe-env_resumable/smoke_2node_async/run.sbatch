@@ -1,21 +1,17 @@
 #!/bin/bash
 #
-# Slurm wrapper for the Qwen3-235B-Thinking SWE-bench-Verified training run.
-# Same orchestration as run_async.sbatch for the retool variant — only the
-# inner script differs (run_swe.sh wires generate_with_codingagent + the
-# SWE-bench prompt-data).
+# 2-node async SWE-bench smoke for resume-path validation. Submit from
+# slime repo root:
+#   sbatch examples/qwen3-235b_fullasync_swe-env_resumable/smoke_2node_async/run.sbatch
 #
-# Submit from slime repo root:
-#   sbatch examples/qwen3-235b_fullasync_swe-env/run_swe.sbatch
-#
-#SBATCH --job-name=infx-swe
-#SBATCH --nodes=12
+#SBATCH --job-name=infx-rsm-smoke
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-task=128
-#SBATCH --time=24:00:00
-#SBATCH --output=mnt/logs/infx-swe-%j.out
-#SBATCH --error=mnt/logs/infx-swe-%j.err
+#SBATCH --time=06:00:00
+#SBATCH --output=mnt/logs/infx-rsm-smoke-%j.out
+#SBATCH --error=mnt/logs/infx-rsm-smoke-%j.err
 
 set -ex
 
@@ -56,7 +52,7 @@ srun --nodes=1 --ntasks=1 --nodelist="$HEAD" \
      --container-image="$CONTAINER_IMAGE" \
      --container-mounts="$CONTAINER_MOUNTS" \
      --container-workdir=/root/slime \
-     --output="${LOGDIR}/infx-swe-${JOB}-head.out" \
+     --output="${LOGDIR}/infx-rsm-smoke-${JOB}-head.out" \
      bash -c "${RAY_BOOT} && ray start --head \
                        --node-ip-address=${HEAD_IP} \
                        --port=6379 \
@@ -75,7 +71,7 @@ for node in "${NODES[@]:1}"; do
          --container-image="$CONTAINER_IMAGE" \
          --container-mounts="$CONTAINER_MOUNTS" \
          --container-workdir=/root/slime \
-         --output="${LOGDIR}/infx-swe-${JOB}-${node}.out" \
+         --output="${LOGDIR}/infx-rsm-smoke-${JOB}-${node}.out" \
          bash -c "${RAY_BOOT} && ray start --address=${HEAD_IP}:6379 \
                            --num-gpus=8 \
                            --disable-usage-stats \
@@ -89,10 +85,10 @@ srun --nodes=1 --ntasks=1 --nodelist="$HEAD" --overlap \
      --container-image="$CONTAINER_IMAGE" \
      --container-mounts="$CONTAINER_MOUNTS" \
      --container-workdir=/root/slime \
-     --export=ALL,NUM_ROLLOUT="${NUM_ROLLOUT:-200}",ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}",MODAL_CONFIG_PATH="${MODAL_CONFIG_PATH}" \
-     bash examples/qwen3-235b_fullasync_swe-env/run_swe.sh "${HEAD_IP}"
+     --export=ALL,NUM_ROLLOUT="${NUM_ROLLOUT:-10}",MODAL_CONFIG_PATH="${MODAL_CONFIG_PATH}" \
+     bash examples/qwen3-235b_fullasync_swe-env_resumable/smoke_2node_async/run.sh "${HEAD_IP}"
 
-echo "Training command finished — stopping Ray cluster."
+echo "Training finished — stopping Ray."
 srun --ntasks-per-node=1 --overlap \
      --container-image="$CONTAINER_IMAGE" \
      --container-mounts="$CONTAINER_MOUNTS" \

@@ -1,0 +1,24 @@
+# 2-node PD smoke layout. Validates the upstream-aligned PD config shape
+# (per-engine `overrides: {disaggregation_transfer_backend: mooncake}`)
+# on our hardware/image without occupying the 12-node pool the main
+# Qwen3-235B run uses.
+#
+#   prefill: 8 GPUs (1 node) → 1 engine × TP=8
+#   decode:  8 GPUs (1 node) → 1 engine × TP=8
+#
+# Total 16 GPUs, --colocate with the 16-GPU trainer (same shape as upstream
+# slime tests/test_glm4.7_30B_A3B_pd_mooncake.py, just scaled 1 → 2 nodes).
+sglang:
+  - name: actor
+    num_gpus_per_engine: 8
+    server_groups:
+      - worker_type: prefill
+        num_gpus: 8
+        num_gpus_per_engine: 8
+        overrides:
+          disaggregation_transfer_backend: mooncake
+      - worker_type: decode
+        num_gpus: 8
+        num_gpus_per_engine: 8
+        overrides:
+          disaggregation_transfer_backend: mooncake

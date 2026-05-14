@@ -1,0 +1,18 @@
+# PD layout for the upstream-aligned attempt. Mirrors the per-engine
+# `overrides: {disaggregation_transfer_backend: mooncake}` shape from
+# upstream slime's tests/test_glm4.7_30B_A3B_pd_mooncake.py (which is
+# slime's only working PD reference). 5 prefill × TP=8 + 3 decode × TP=8.
+sglang:
+  - name: actor
+    num_gpus_per_engine: 8
+    server_groups:
+      - worker_type: prefill
+        num_gpus: 40
+        num_gpus_per_engine: 8
+        overrides:
+          disaggregation_transfer_backend: mooncake
+      - worker_type: decode
+        num_gpus: 24
+        num_gpus_per_engine: 8
+        overrides:
+          disaggregation_transfer_backend: mooncake

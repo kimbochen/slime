@@ -66,12 +66,13 @@ ROLLOUT_ARGS=(
    --global-batch-size 64
    --balance-data
 
-   # NOT setting --partial-rollout: the SWE-bench agent in
-   # generate_with_codingagent.py has an explicit assert that rejects it
-   # (line 290 — "Partial rollout not supported"). The agent state machine
-   # (tool-call loop with sandbox state) can't safely resume mid-trajectory.
-   # Pipeline-RL behavior would require modifying the agent to checkpoint
-   # and restore mid-call state.
+   # Pipeline-RL style: keep partial rollouts across weight updates. The
+   # RESUMABLE variant of generate_with_codingagent.py (in this directory)
+   # parks the Modal sandbox per-sample on abort and re-attaches it on the
+   # next dispatch — sandbox filesystem state survives across weight
+   # updates. See coding_sandbox.py's park/acquire_or_resume methods and
+   # the generate() resume-detection logic.
+   --partial-rollout
 )
 
 # Eval disabled for the bring-up — the 10-instance training set IS the eval.
@@ -185,7 +186,7 @@ RUNTIME_ENV_JSON=$(cat <<EOF
     "SLIME_SWEBENCH_APP": "${SLIME_SWEBENCH_APP:-infx-slime-swebench-sandbox}",
     "SLIME_SWEBENCH_MAX_CONCURRENT": "${SLIME_SWEBENCH_MAX_CONCURRENT:-100}",
     "SLIME_SWEBENCH_SPAWN_QPS": "${SLIME_SWEBENCH_SPAWN_QPS:-10}",
-    "SLIME_SWEBENCH_TIMEOUT": "${SLIME_SWEBENCH_TIMEOUT:-1800}",
+    "SLIME_SWEBENCH_TIMEOUT": "${SLIME_SWEBENCH_TIMEOUT:-7200}",
     "SLIME_SWEBENCH_PER_CMD_TIMEOUT": "${SLIME_SWEBENCH_PER_CMD_TIMEOUT:-120}",
     "SLIME_SWEBENCH_MAX_TURNS": "${SLIME_SWEBENCH_MAX_TURNS:-30}",
 

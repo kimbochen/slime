@@ -1,0 +1,30 @@
+# 2-node PD with asymmetric 3:1 prefill:decode ratio (matches the prefill-heavy
+# direction of the 12-node 5:3 layout, at smaller scale).
+#
+#   prefill: 12 GPUs → 3 engines × TP=4
+#   decode:   4 GPUs → 1 engine  × TP=4
+#   total:   16 GPUs (2 nodes × 8 GPUs, --colocate)
+#
+# Diagnostic: tests whether SGLang's PD router correctly tracks which prefill
+# instance produced each bootstrap_room when there are MULTIPLE prefill
+# engines. The smoke_2node config (1+1) was unambiguous — only one prefill
+# could have produced any given bootstrap_room. With 3 prefill engines, the
+# router must use load_balance_method='follow_bootstrap_room' to send each
+# decode request to the prefill instance that owns its KV. If that
+# bookkeeping breaks, we'll see the same KVTransferError pattern as 12-node:
+#   "Failed to get kvcache from prefill instance, it might be dead"
+# meaning decode asked the WRONG prefill for the KV.
+sglang:
+  - name: actor
+    num_gpus_per_engine: 4
+    server_groups:
+      - worker_type: prefill
+        num_gpus: 12
+        num_gpus_per_engine: 4
+        overrides:
+          disaggregation_transfer_backend: mooncake
+      - worker_type: decode
+        num_gpus: 4
+        num_gpus_per_engine: 4
+        overrides:
+          disaggregation_transfer_backend: mooncake

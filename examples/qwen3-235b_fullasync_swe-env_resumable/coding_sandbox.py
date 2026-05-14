@@ -378,7 +378,19 @@ class CodingSandboxPool:
     """Manages live coding sandboxes — bounds concurrency and rate-limits
     spawns. Unlike the retool sandbox pool, this is NOT a warm pool: each
     sandbox is per-instance, so pre-warming is pointless. The pool here
-    is just an acquire/release wrapper with concurrency control."""
+    is just an acquire/release wrapper with concurrency control.
+
+    RESUMABLE VARIANT:
+      • `park(sandbox, resume_key)` — register a still-alive sandbox under
+        a per-sample key WITHOUT releasing the concurrency slot. The sample
+        will come back via `acquire_or_resume(resume_key=...)` and continue
+        using the same sandbox (with all filesystem mutations / state intact).
+      • `acquire_or_resume(instance_id, resume_key)` — if a parked sandbox
+        exists for that key, return it; otherwise create a fresh one.
+      • Parked sandboxes hold a concurrency slot — they consume capacity
+        until either resumed-and-released or GC'd (the atexit hook
+        terminates them on shutdown).
+    """
 
     def __init__(
         self,
@@ -394,13 +406,18 @@ class CodingSandboxPool:
         # forcing Modal auth on import-time).
         self._app: "modal.App | None" = None
         self._app_lock = asyncio.Lock()
-        # Cap simultaneous LIVE sandboxes
+        # Cap simultaneous LIVE sandboxes (active + parked combined).
         self._concurrency = asyncio.Semaphore(self._max_concurrent)
         # Cap spawn rate (token bucket-style: at most spawn_qps creates / sec)
         self._spawn_token = asyncio.Semaphore(1)
         self._last_spawn_t = 0.0
         self._active: dict[str, CodingSandbox] = {}
         self._active_lock = asyncio.Lock()
+        # Resumable-rollout state: sandboxes parked mid-trajectory by their
+        # owning generate() call, keyed by a caller-supplied resume_key.
+        # NOTE: a parked sandbox still holds a concurrency slot.
+        self._parked: dict[str, CodingSandbox] = {}
+        self._parked_lock = asyncio.Lock()
         atexit.register(self._sync_terminate_all)
 
     async def _get_app(self) -> "modal.App":
@@ -445,18 +462,89 @@ class CodingSandboxPool:
         finally:
             self._concurrency.release()
 
+    @property
+    def num_parked(self) -> int:
+        """Best-effort count of currently-parked sandboxes (for telemetry)."""
+        return len(self._parked)
+
+    async def acquire_or_resume(
+        self,
+        instance_id: str,
+        *,
+        resume_key: str,
+        **create_kwargs: Any,
+    ) -> tuple[CodingSandbox, bool]:
+        """Return a sandbox for `instance_id`. If a sandbox was previously
+        parked under `resume_key`, return that one (with all its state
+        intact). Otherwise, spawn a fresh one.
+
+        Returns: (sandbox, resumed) — `resumed=True` if we found a parked
+        sandbox; `resumed=False` if we spawned a new one.
+
+        Like `acquire`, caller MUST call `release` on normal completion
+        OR `park` on mid-trajectory abort.
+        """
+        # Fast path: check if a parked sandbox exists for this resume key.
+        async with self._parked_lock:
+            parked = self._parked.pop(resume_key, None)
+        if parked is not None and not parked._terminated:
+            async with self._active_lock:
+                self._active[parked.id] = parked
+            print(
+                f"[coding_sandbox] RESUMED parked sandbox for resume_key={resume_key} "
+                f"instance={instance_id} (parked_remaining={len(self._parked)})",
+                flush=True,
+            )
+            return parked, True
+
+        # Otherwise: cold-start a new sandbox. Same path as `acquire`.
+        sandbox = await self.acquire(instance_id, **create_kwargs)
+        return sandbox, False
+
+    async def park(self, sandbox: CodingSandbox, *, resume_key: str) -> None:
+        """Move `sandbox` from the active set into the parked set, keyed
+        by `resume_key`. The concurrency slot is NOT released — the
+        sandbox is still alive on Modal's side, awaiting resume. Caller is
+        expected to record `resume_key` on the slime Sample's metadata so
+        the next `acquire_or_resume` call can find it.
+
+        If a parked sandbox already exists under `resume_key` (shouldn't
+        happen — implies double-park), the older one is terminated to
+        prevent a leaked concurrency slot.
+        """
+        async with self._active_lock:
+            self._active.pop(sandbox.id, None)
+        async with self._parked_lock:
+            stale = self._parked.get(resume_key)
+            self._parked[resume_key] = sandbox
+            n_parked = len(self._parked)
+        print(
+            f"[coding_sandbox] PARKED sandbox for resume_key={resume_key} "
+            f"sandbox_id={sandbox.id} (total_parked={n_parked})",
+            flush=True,
+        )
+        if stale is not None and stale is not sandbox:
+            # Defensive: terminate the previously-parked one and free its
+            # concurrency slot. Should be rare/never in practice.
+            try:
+                await stale.cleanup()
+            finally:
+                self._concurrency.release()
+
     def session(self, instance_id: str, **create_kwargs: Any) -> "_SandboxSession":
         """Async context manager: `async with pool.session(inst_id) as sb: ...`"""
         return _SandboxSession(self, instance_id, create_kwargs)
 
     def _sync_terminate_all(self) -> None:
-        """atexit hook — best-effort termination of any leaked sandboxes."""
-        if not self._active:
+        """atexit hook — best-effort termination of any leaked sandboxes
+        (both active and parked)."""
+        all_sandboxes = list(self._active.values()) + list(self._parked.values())
+        if not all_sandboxes:
             return
 
         async def _all():
             await asyncio.gather(
-                *(sb.cleanup() for sb in list(self._active.values())),
+                *(sb.cleanup() for sb in all_sandboxes),
                 return_exceptions=True,
             )
 

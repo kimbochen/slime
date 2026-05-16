@@ -20,7 +20,7 @@ lib64/
 # Exception: examples/qwen3-235b_fullasync_swe-env/lib/ is a real source dir
 # (the shared agent runtime), not a Python build artifact.
 !examples/qwen3-235b_fullasync_swe-env/lib/
-!examples/qwen3-235b_fullasync_swe-env/lib/**
+!examples/qwen3-235b_fullasync_swe-env/lib/*.py
 parts/
 sdist/
 var/
@@ -198,3 +198,7 @@ glm/
 _examples_synced/
 .env
 .DS_Store
+
+# Vim swap files
+*.swp
+.*.swp

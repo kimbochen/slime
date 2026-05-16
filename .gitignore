@@ -16,6 +16,11 @@ eggs/
 .eggs/
 lib/
 lib64/
+
+# Exception: examples/qwen3-235b_fullasync_swe-env/lib/ is a real source dir
+# (the shared agent runtime), not a Python build artifact.
+!examples/qwen3-235b_fullasync_swe-env/lib/
+!examples/qwen3-235b_fullasync_swe-env/lib/**
 parts/
 sdist/
 var/

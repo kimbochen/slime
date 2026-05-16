@@ -1,0 +1,344 @@
+{
+  "job_id": "31395",
+  "log_path": "mnt/logs/infx-swe-31395.out",
+  "n_steps": 11,
+  "n_rollouts": 0,
+  "steps": [
+    {
+      "step": 0,
+      "perf": {
+        "perf/update_weights_time": 39.38940978050232,
+        "perf/data_preprocess_time": 0.28639745712280273,
+        "perf/train_wait_time": 667.0946125984192,
+        "perf/log_probs_time": 51.859357595443726,
+        "perf/actor_train_time": 181.61896300315857,
+        "perf/train_time": 234.56220817565918,
+        "perf/log_probs_tflops": 59.25285035112221,
+        "perf/actor_train_tflops": 50.757058141358065,
+        "perf/actor_train_tok_per_s": 6814.574753289808,
+        "perf/step_time": 901.6568207740784,
+        "perf/wait_time_ratio": 0.7398542297120473
+      }
+    },
+    {
+      "step": 1,
+      "perf": {
+        "perf/data_preprocess_time": 0.30011558532714844,
+        "perf/train_wait_time": 354.0604238510132,
+        "perf/log_probs_time": 16.277416944503784,
+        "perf/actor_train_time": 143.50208067893982,
+        "perf/train_time": 160.90133261680603,
+        "perf/log_probs_tflops": 180.83959643431348,
+        "perf/actor_train_tflops": 61.53781528414701,
+        "perf/actor_train_tok_per_s": 8379.209516064304,
+        "perf/step_time": 514.9617564678192,
+        "perf/wait_time_ratio": 0.6875470253937954
+      }
+    },
+    {
+      "step": 2,
+      "perf": {
+        "perf/data_preprocess_time": 0.27745509147644043,
+        "perf/train_wait_time": 316.82111263275146,
+        "perf/log_probs_time": 16.586554527282715,
+        "perf/actor_train_time": 157.59383416175842,
+        "perf/train_time": 175.29408597946167,
+        "perf/log_probs_tflops": 175.9067506374652,
+        "perf/actor_train_tflops": 55.541898450874356,
+        "perf/actor_train_tok_per_s": 7494.595244047975,
+        "perf/step_time": 492.11519861221313,
+        "perf/wait_time_ratio": 0.6437946105428184
+      }
+    },
+    {
+      "step": 3,
+      "perf": {
+        "perf/data_preprocess_time": 0.27520298957824707,
+        "perf/train_wait_time": 288.71109199523926,
+        "perf/log_probs_time": 17.302433967590332,
+        "perf/actor_train_time": 141.41293573379517,
+        "perf/train_time": 159.83749127388,
+        "perf/log_probs_tflops": 170.69334476293653,
+        "perf/actor_train_tflops": 62.6550246865859,
+        "perf/actor_train_tok_per_s": 8454.481153341048,
+        "perf/step_time": 448.54858326911926,
+        "perf/wait_time_ratio": 0.6436562342724399
+      }
+    },
+    {
+      "step": 4,
+      "perf": {
+        "perf/data_preprocess_time": 0.28746962547302246,
+        "perf/train_wait_time": 404.36805629730225,
+        "perf/log_probs_time": 19.30230975151062,
+        "perf/actor_train_time": 134.84703087806702,
+        "perf/train_time": 155.26431226730347,
+        "perf/log_probs_tflops": 158.41363935949775,
+        "perf/actor_train_tflops": 68.02706257313224,
+        "perf/actor_train_tok_per_s": 9184.013855817368,
+        "perf/step_time": 559.6323685646057,
+        "perf/wait_time_ratio": 0.7225601645138235
+      }
+    },
+    {
+      "step": 5,
+      "perf": {
+        "perf/update_weights_time": 35.09275221824646,
+        "perf/data_preprocess_time": 0.2908620834350586,
+        "perf/train_wait_time": 350.98495507240295,
+        "perf/log_probs_time": 16.545490503311157,
+        "perf/actor_train_time": 146.06805324554443,
+        "perf/train_time": 163.71231293678284,
+        "perf/log_probs_tflops": 209.79625282894162,
+        "perf/actor_train_tflops": 71.29242496940178,
+        "perf/actor_train_tok_per_s": 9147.72922833322,
+        "perf/step_time": 514.6972680091858,
+        "perf/wait_time_ratio": 0.6819250399948479
+      }
+    },
+    {
+      "step": 6,
+      "perf": {
+        "perf/data_preprocess_time": 0.2966575622558594,
+        "perf/train_wait_time": 981.8246955871582,
+        "perf/log_probs_time": 18.024364709854126,
+        "perf/actor_train_time": 151.99700713157654,
+        "perf/train_time": 171.1369652748108,
+        "perf/log_probs_tflops": 190.09178358044718,
+        "perf/actor_train_tflops": 67.62535066170092,
+        "perf/actor_train_tok_per_s": 8669.466753771681,
+        "perf/step_time": 1152.961660861969,
+        "perf/wait_time_ratio": 0.8515675142685434
+      }
+    },
+    {
+      "step": 7,
+      "perf": {
+        "perf/data_preprocess_time": 0.3090782165527344,
+        "perf/train_wait_time": 3313.273375749588,
+        "perf/log_probs_time": 14.902864217758179,
+        "perf/actor_train_time": 130.00051093101501,
+        "perf/train_time": 146.02389883995056,
+        "perf/log_probs_tflops": 187.90301989972536,
+        "perf/actor_train_tflops": 64.6218965975826,
+        "perf/actor_train_tok_per_s": 8952.22635407617,
+        "perf/step_time": 3459.2972745895386,
+        "perf/wait_time_ratio": 0.9577879877764258
+      }
+    },
+    {
+      "step": 8,
+      "perf": {
+        "perf/data_preprocess_time": 0.2363593578338623,
+        "perf/train_wait_time": 3102.432765722275,
+        "perf/log_probs_time": 15.84112811088562,
+        "perf/actor_train_time": 131.09059977531433,
+        "perf/train_time": 148.05228304862976,
+        "perf/log_probs_tflops": 158.5457005395299,
+        "perf/actor_train_tflops": 57.47649544623753,
+        "perf/actor_train_tok_per_s": 8232.474348654434,
+        "perf/step_time": 3250.4850487709045,
+        "perf/wait_time_ratio": 0.9544522491790534
+      }
+    },
+    {
+      "step": 9,
+      "perf": {
+        "perf/data_preprocess_time": 0.3260006904602051,
+        "perf/train_wait_time": 3860.3321928977966,
+        "perf/log_probs_time": 16.90751814842224,
+        "perf/actor_train_time": 142.34805822372437,
+        "perf/train_time": 160.32773971557617,
+        "perf/log_probs_tflops": 171.60145891136753,
+        "perf/actor_train_tflops": 61.1463510716747,
+        "perf/actor_train_tok_per_s": 8402.074569364699,
+        "perf/step_time": 4020.659932613373,
+        "perf/wait_time_ratio": 0.9601240238163178
+      }
+    },
+    {
+      "step": 10,
+      "perf": {
+        "perf/update_weights_time": 34.42391061782837,
+        "perf/data_preprocess_time": 0.26900792121887207,
+        "perf/train_wait_time": 4016.156113386154,
+        "perf/log_probs_time": 18.939608812332153,
+        "perf/actor_train_time": 137.45224809646606,
+        "perf/train_time": 157.5073001384735,
+        "perf/log_probs_tflops": 164.90394813508814,
+        "perf/actor_train_tflops": 68.16657375648944,
+        "perf/actor_train_tok_per_s": 8996.513459220701,
+        "perf/step_time": 4173.663413524628,
+        "perf/wait_time_ratio": 0.9622616189824805
+      }
+    }
+  ],
+  "rollouts": [],
+  "trainer_rewards": [
+    {
+      "rollout_id": 0,
+      "trainer_data": {
+        "rollout/response_lengths": 18143.875,
+        "rollout/rewards": -0.0013970457948744297,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.7190859913825989,
+        "rollout/raw_reward": 0.043750000000000004,
+        "rollout/total_lengths": 19338.375,
+        "rollout/log_probs": -0.7417285740375519,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.0013970441650599241,
+        "rollout/returns": -0.0013970441650599241
+      }
+    },
+    {
+      "rollout_id": 1,
+      "trainer_data": {
+        "rollout/response_lengths": 17802.53125,
+        "rollout/rewards": -0.0027940040454268456,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.7239851206541061,
+        "rollout/raw_reward": 0.0484375,
+        "rollout/total_lengths": 18788.03125,
+        "rollout/log_probs": -0.744484469294548,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.002794003114104271,
+        "rollout/returns": -0.002794003114104271
+      }
+    },
+    {
+      "rollout_id": 2,
+      "trainer_data": {
+        "rollout/response_lengths": 16217.34375,
+        "rollout/rewards": -0.003725290298461914,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.6535612046718597,
+        "rollout/raw_reward": 0.05,
+        "rollout/total_lengths": 18454.71875,
+        "rollout/log_probs": -0.6737057268619537,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.003725290473084897,
+        "rollout/returns": -0.003725290473084897
+      }
+    },
+    {
+      "rollout_id": 3,
+      "trainer_data": {
+        "rollout/response_lengths": 17775.453125,
+        "rollout/rewards": -0.0023283427581191063,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.7329428493976593,
+        "rollout/raw_reward": 0.045312500000000006,
+        "rollout/total_lengths": 18680.828125,
+        "rollout/log_probs": -0.7549969404935837,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.002328344387933612,
+        "rollout/returns": -0.002328344387933612
+      }
+    },
+    {
+      "rollout_id": 4,
+      "trainer_data": {
+        "rollout/response_lengths": 18303.203125,
+        "rollout/rewards": -0.00325964717194438,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.7107439190149307,
+        "rollout/raw_reward": 0.049218750000000006,
+        "rollout/total_lengths": 19350.578125,
+        "rollout/log_probs": -0.7323969453573227,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.0032596449746051803,
+        "rollout/returns": -0.0032596449746051803
+      }
+    },
+    {
+      "rollout_id": 5,
+      "trainer_data": {
+        "rollout/response_lengths": 19762.609375,
+        "rollout/rewards": -0.002328313887119293,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.7462121546268463,
+        "rollout/raw_reward": 0.04296875,
+        "rollout/total_lengths": 20877.984375,
+        "rollout/log_probs": -0.7688407897949219,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.002328312722966075,
+        "rollout/returns": -0.002328312722966075
+      }
+    },
+    {
+      "rollout_id": 6,
+      "trainer_data": {
+        "rollout/response_lengths": 19525.203125,
+        "rollout/rewards": -0.002328332047909498,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.7465102672576904,
+        "rollout/raw_reward": 0.04453125,
+        "rollout/total_lengths": 20589.578125,
+        "rollout/log_probs": -0.7676043808460236,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.0023283323971554637,
+        "rollout/returns": -0.0023283323971554637
+      }
+    },
+    {
+      "rollout_id": 7,
+      "trainer_data": {
+        "rollout/response_lengths": 17113.53125,
+        "rollout/rewards": -0.0027939751744270325,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.6961035132408142,
+        "rollout/raw_reward": 0.04609375,
+        "rollout/total_lengths": 18184.28125,
+        "rollout/log_probs": -0.7173833101987839,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.0027939743013121188,
+        "rollout/returns": -0.0027939743013121188
+      }
+    },
+    {
+      "rollout_id": 8,
+      "trainer_data": {
+        "rollout/response_lengths": 14677.5,
+        "rollout/rewards": -0.003725290298461914,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.7049781680107117,
+        "rollout/raw_reward": 0.05,
+        "rollout/total_lengths": 16862.5,
+        "rollout/log_probs": -0.7261252701282501,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.0037252907059155405,
+        "rollout/returns": -0.0037252907059155405
+      }
+    },
+    {
+      "rollout_id": 9,
+      "trainer_data": {
+        "rollout/response_lengths": 17602.421875,
+        "rollout/rewards": -0.002328332047909498,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.6889375597238541,
+        "rollout/raw_reward": 0.04453125,
+        "rollout/total_lengths": 18687.796875,
+        "rollout/log_probs": -0.710066169500351,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.0023283366463147104,
+        "rollout/returns": -0.0023283366463147104
+      }
+    },
+    {
+      "rollout_id": 10,
+      "trainer_data": {
+        "rollout/response_lengths": 18156.234375,
+        "rollout/rewards": -0.0023283609189093113,
+        "rollout/truncated": 0.0,
+        "rollout/rollout_log_probs": -0.6850006058812141,
+        "rollout/raw_reward": 0.047656250000000004,
+        "rollout/total_lengths": 19321.734375,
+        "rollout/log_probs": -0.7072206139564514,
+        "rollout/kl": 0.0,
+        "rollout/advantages": -0.0023283621994778514,
+        "rollout/returns": -0.0023283621994778514
+      }
+    }
+  ]
+}

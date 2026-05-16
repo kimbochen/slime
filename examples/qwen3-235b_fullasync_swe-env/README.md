@@ -1,318 +1,162 @@
-# Qwen3-235B-Thinking + SWE-bench Verified agentic coding
+# Qwen3-235B + SWE-bench — fully-async agentic RL with slime
 
-A fully-async slime example that trains Qwen3-235B-A22B-Thinking-2507-FP8 to
-solve real GitHub bug fixes on **SWE-bench Verified**, using **per-instance
-Modal sandboxes** as the execution environment for the agent's tools.
+Twelve-node H200 cluster, Qwen3-235B-A22B-Thinking-2507, Modal-backed
+Docker sandboxes from Epoch AI's per-instance SWE-bench images, six-tool
+coding agent, fully-async Megatron + 8× SGLang TP=8 engines.
 
-Built on top of slime's `examples/fully_async/` driver and modeled after
-`examples/qwen3-235b-thinking_fullasync_retool_modal/`. Differences from
-the retool example are in [Comparison vs. retool](#comparison-vs-retool).
+This example is structured as a **linear log of experiments** — the
+journey from initial bring-up through context scaling, PD attempts,
+partial-rollout, metric instrumentation, and the final
+partial-rollout-vs-base comparison.
 
-```
-                 ┌──────────────────────────────────────────────────────────────┐
-                 │             slime rollout (custom-generate path)             │
-                 │                                                              │
-   prompt_data   │   for each sample (= one SWE-bench instance):                │
-   (JSONL with   │     async with coding_sandbox.session(instance_id) as sb:    │
-   instance_id)──┼───►  for turn in range(max_turns):                           │
-                 │       sglang.generate → parse <tool_call>{...}</tool_call>   │
-                 │       sb.run_command / read_file / write_file /              │
-                 │         apply_patch / run_tests / submit                     │
-                 │       feed result back as <tool_response> observation        │
-                 │     stash test verdict on sample for reward_func             │
-                 └──────────────────────────────────────────────────────────────┘
-                                  ▲                              │
-                                  │                              ▼
-                          ┌───────┴──────────┐         ┌──────────────────────────┐
-                          │ Modal app:        │ pulls   │ Epoch AI per-instance    │
-                          │ infx-slime-       ├────────►│ Docker registry:         │
-                          │ swebench-sandbox  │         │ ghcr.io/epoch-research/  │
-                          │ (Sandbox.create)  │         │   swe-bench.eval.x86_64. │
-                          │                   │         │   <instance_id>:latest   │
-                          └───────────────────┘         └──────────────────────────┘
-```
-
-## What's in here
+## Layout
 
 ```
-coding_sandbox.py             Modal-backed per-instance sandbox library
-generate_with_codingagent.py  Slime custom-generate hook: prompt build,
-                              tool-call parser, multi-turn agent loop, reward
-add_slime_metrics.py          ContextVar-based per-tool / per-sandbox /
-                              swebench-outcome / policy-staleness instrumentation
-                              + custom_rollout_log_function for wandb
-smoke_test_sandbox.py         End-to-end sandbox lifecycle test (real
-                              Epoch AI image, ~30s including image pull)
-test_codingagent.py           Parser + observation + dispatch unit tests
-test_add_slime_metrics.py     22 unit tests for the metrics wrapper
-gen_prompt_data.py            Pulls N SWE-bench Verified instances into JSONL
-run_swe.sh                    Canonical launcher (64K context: TP=4 PP=2 CP=4)
-run_swe.sbatch                Slurm wrapper for the canonical launcher
-
-results/                      Per-run result packages (one subdir per run)
-└── swe-env-64k-30045/        Latest 20-rollout run with add_slime_metrics
-    ├── README.md, RESULTS.md, metrics.json, metrics_report.txt,
-    └── compile_metrics_json.py, render_metrics_report.py
-
-context-scaling/              16K / 32K / 64K / 128K context-cap experiments
-├── run_swe_16k.{sh,sbatch}   baseline (TP=4 PP=4 CP=2, max_tok/gpu=8K)
-├── run_swe_32k.{sh,sbatch}   (TP=4 PP=4 CP=2, max_tok/gpu=16K)
-├── run_swe_64k.{sh,sbatch}   (TP=4 PP=2 CP=4, max_tok/gpu=16K) — same config
-                              promoted to top-level run_swe.sh
-├── run_swe_128k.{sh,sbatch}  (TP=4 PP=2 CP=4, max_tok/gpu=32K) — stretch
-├── COMPARISON.md             cross-tier headline + analysis
-└── README.md
-
-pd/                           Prefill/Decode-disaggregated variant
-├── run_swe_pd.{sh,sbatch}    64K config + --sglang-config sglang_pd.yaml
-├── sglang_pd.yaml            5 prefill × TP=8 + 3 decode × TP=8 layout
-├── mooncake_ib_per_gpu.json  per-GPU HCA binding (workaround for
-                              get_ib_devices_for_gpu comma-list parser bug)
-└── README.md                 STATUS: blocked on upstream Mooncake PD bug
-                              (see mnt/mooncake_bug_report/BUG_REPORT.md)
+.
+├── README.md             ← you are here (high-level journey)
+├── EXPERIMENTS.md        ← status table + index of all experiments
+├── lib/                  ← shared library code — single source of truth
+│   ├── coding_sandbox.py           ← Modal pool + per-sample sandbox class
+│   ├── generate_with_codingagent.py ← agent loop (gated resume branch)
+│   ├── rollout_metrics.py        ← metric wrapper for slime hooks
+│   └── gen_prompt_data.py          ← dataset prep (--source verified|lite)
+├── tests/                ← tests for lib/ — all hermetic
+│   ├── test_coding_sandbox.py      ← 18 tests, stubs `modal`
+│   ├── test_metric_fix.py          ← 10 tests, stubs slime
+│   ├── test_codingagent.py         ← parser tests (no live sandbox needed)
+│   ├── test_rollout_metrics.py   ← older metric tests
+│   └── smoke_test_sandbox.py       ← end-to-end live Modal smoke test
+├── 01-initial-bringup-29747/
+├── 02-context-scaling-29922/
+├── 03-slime-metrics-30045/
+├── 04-pd-disaggregation-abandoned/
+├── 05-resumable-smoke-30707/
+├── 06-update-weights-interval-30922/
+├── 07-switch-to-lite-40/
+├── 08-metadata-metric-fix-30939/
+├── 09-resumable-full-run-31011/
+├── 10-base-control-31079/
+├── 11-sglang-deepep-16k-response/
+├── 12-deepep-normal-16k-response/
+└── 13-ep8-no-deepep-16k-response/
 ```
 
-## Sandbox design (`coding_sandbox.py`)
+## The journey, summarized
 
-**One sandbox per agent rollout, not per shell command.** A single Modal
-sandbox persists for the duration of one SWE-bench instance's multi-turn
-trajectory, then terminates. Tinker-cookbook's sandbox creates per-request;
-we don't, because applying patches + running tests + iterating only makes
-sense on shared filesystem state across turns.
+**Bring-up → context scaling → instrumentation → PD disaster → resumable
+smoke → tuning → bug-hunting → headline runs.**
 
-**Per-instance Docker images** — every SWE-bench Verified instance has a
-prebuilt image on Epoch AI's ghcr.io registry (`ghcr.io/epoch-research/
-swe-bench.eval.x86_64.<instance_id>:latest`). Each one already has the
-repo cloned to `/testbed`, dependencies installed in a conda env at
-`/opt/miniconda3`, and a `/eval.sh` that runs the FAIL_TO_PASS +
-PASS_TO_PASS test set with the right invocation. Pulling a fresh image
-takes ~30s the first time; Modal caches it after.
+1. **01 — Initial bring-up.** Modal + 6-tool agent + fully-async Megatron
+   on 12 nodes. Verified the whole stack lit up on SWE-bench Verified-10.
+   Trajectories hit 32K context — needed more headroom.
 
-**General-purpose tool surface** — not the single-shot `execute_code` of
-the retool sandbox:
+2. **02 — Context scaling sweep.** Tested 16K / 32K / 64K / 128K trainer
+   context caps. **64K is the knee:** smallest cap with 0 truncations on
+   Qwen3-Thinking's natural trajectory distribution.
 
-| Method | What it does |
-|---|---|
-| `run_command(cmd, cwd=None, env=None, timeout=...)` | Shell exec via `bash -c`. Streams capped at 128 KB. |
-| `read_file(path, max_bytes=...)` | `head -c MAX path`. Same byte cap. |
-| `write_file(path, content, executable=False)` | Chunked stdin write via `tee`. 2 MB chunks. |
-| `apply_patch(patch_text)` | `git apply --whitespace=nowarn` on the diff. |
-| `run_tests(test_command=None)` | Default: `/eval.sh`. Override per-instance if needed. 1200s timeout. |
-| `heartbeat()` | `bash -c true` to confirm the sandbox is alive. |
-| `cleanup()` | Idempotent termination. |
+3. **03 — Slime metric instrumentation.** Added `rollout_metrics.py`
+   wrapping the agent's `generate`, `reward_func`, and a custom rollout-log
+   hook. Per-tool sandbox metrics, per-SWE-bench outcomes, and a
+   policy-staleness metric. Validated on a 20-step run (job 30045).
 
-Defensive features the retool sandbox doesn't have:
+4. **04 — PD disaggregation.** Tried prefill/decode separation on the
+   rollout pool to potentially speed up rollouts. Three config-level fixes
+   all failed with the same `KVTransferError: Failed to get kvcache from
+   prefill instance`. Traced to a Mooncake C++ binding bug. **Abandoned.**
 
-- **Byte-capped stream reads** (default 128 KB) — model can't OOM the rollout
-  worker by writing megabytes to stdout.
-- **Concurrency-bounded + rate-limited spawn** — Modal's control plane gets
-  unhappy at >20 concurrent sandbox creates; the pool caps live sandboxes
-  (default 32) and emits spawns at ≤4 QPS by default.
-- **Lazy `App.lookup`** — Modal auth isn't forced at import time. Test
-  files can be imported without Modal credentials.
-- **Heartbeat** — proactively detect dead sandboxes rather than discovering
-  at the next command.
-- **`atexit` drain** — best-effort termination of any leaked sandboxes when
-  the rollout process exits.
+5. **05 — Resumable smoke.** Added park/resume to the sandbox pool and a
+   resume-detection branch to the agent loop, both gated behind
+   `--partial-rollout`. Validated PARKED/RESUMED end-to-end. Ran 20 steps,
+   8h19m. *But:* `policy_staleness` reported 0 throughout — suspicious.
 
-Comparison with our retool sandbox:
+6. **06 — `--update-weights-interval=5`.** Cut weight-push overhead by
+   pushing every 5 steps. **52% step-time reduction** (1078s → 511s mean).
+   The staleness silence got more inexplicable — now staleness should
+   definitely be >0.
 
-| aspect | retool `modal_tool_sandbox` | swe-env `coding_sandbox` |
-|---|---|---|
-| lifetime | reused across many python execs | one per agent rollout, then dies |
-| image | `debian_slim` + `sympy/scipy` | per-instance `epochai/sweb.eval.*` |
-| API | `execute_code(python_src)` | `run_command`, `read/write_file`, `apply_patch`, `run_tests` |
-| network | `block_network=True` | unblocked (needs `pip`, `git`, etc.) |
-| state retention | none — each call independent | filesystem persists across turns |
-| byte cap on stdout | no | 128 KB (configurable) |
-| heartbeat | no | yes |
-| rate-limited spawn | no (eager gather) | yes (configurable QPS) |
+7. **07 — Switch to SWE-bench Lite.** Lite-40 (4 instances × 10 repos)
+   has denser per-group reward variance than Verified-10. Used for all
+   subsequent experiments.
 
-## The agent loop (`generate_with_codingagent.py`)
+8. **08 — Metric bug found.** `policy_staleness` and `resume_count` were
+   stored as plain attributes on the `Sample` object. Ray's cloudpickle
+   strips arbitrary attributes when round-tripping through the partial-
+   rollout buffer; only declared dataclass fields survive. **Fix:** move
+   both into `sample.metadata` (a real field). Also made staleness
+   interval-aware (`weight_version = rollout_id // update_weights_interval`).
+   Added 10 hermetic tests covering sticky stamping, pickle round-trip,
+   interval-aware math, etc.
 
-Implements slime's `--custom-generate-function-path` and `--custom-rm-path`
-contracts. The agent uses Qwen3-Thinking's native chat template via
-`tokenizer.apply_chat_template(..., tools=TOOL_SPECS, add_generation_prompt=True)`,
-so all tool injection and `<|im_start|>`/`<|im_end|>` framing is handled by
-the model's own jinja template — no string fiddling.
+9. **09 — Resumable full run with fixed metrics.** Same setup as 05 but
+   on Lite-40 with interval=5 and the metric fix. **FAILED at 7h25m**
+   with a gloo recv timeout. Forensics: the 37 samples parked at the
+   first weight push got stuck in an abort-cycling pathology, each
+   re-dispatched 400-700 times producing ~70 tokens per cycle. By step
+   14, rollout_time was 4969s — exceeded gloo's 30-minute collective
+   timeout. **Trainer crashed.** The metric pipeline is verified working
+   (PARKED=63=RESUMED=63), but the training dynamics under naive
+   partial-rollout are pathological for long-context agentic tasks.
 
-Tools exposed to the model (Qwen3 native JSON `<tool_call>` grammar):
+10. **10 — Base control, no partial-rollout.** Identical setup minus
+    `--partial-rollout`. **TIMEOUT at 8h, 10 training steps.** Different
+    pathology: monolithic slow tails. Step 8 alone took 4h 5m — one or
+    two trajectories produced ~40-50K tokens of agentic + thinking
+    output and gated the entire rollout.
 
-| name | parameters | semantics |
-|---|---|---|
-| `run_command` | `cmd`, optional `cwd` | shell exec |
-| `read_file` | `path` | byte-capped read |
-| `write_file` | `path`, `content` | write (creates parents) |
-| `apply_patch` | `patch` | `git apply` of a unified diff |
-| `run_tests` | (none) | run `/eval.sh` (the instance's test set) |
-| `submit` | (none) | terminate the trajectory |
+11. **11 — SGLang DeepEP `auto`/`low_latency` MoE backend, EP=8, 16K cap.**
+    First test of inference-side DeepEP. Faster weight broadcast (35s vs
+    10's 43s), but the post-push regime saw the **straggler-tail collapse**:
+    once one slow sample is alone on an engine, DeepEP `low_latency`'s
+    fixed RDMA-buffer overhead is paid for a 1-token dispatch instead of
+    amortized across 8 → ~8× per-token slowdown on the straggler. Tail
+    steps `p7-p8 ≈ 3500s/step`. **Cancelled at 11 perfs** with no reward
+    movement.
 
-Loop ends on `submit`, on length-truncation, or on hitting `MAX_TURNS`
-(default 30). Observations are wrapped in the Qwen3 tool-response shape:
+12. **12 — DeepEP `normal` mode, same config otherwise. DOA.** `deepep_mode=normal`
+    is incompatible with SGLang's cuda graph capture pipeline: 0% cuda
+    graph hit rate across 306 decode batches. Pure eager decode at
+    5-11 tok/s (vs 22-35 in 11's eager fallback). **Cancelled at 59 min,
+    0 perfs.** Confirms there's no usable DeepEP mode for our scaffold.
 
-```
-<|im_end|>
-<|im_start|>user
-<tool_response>
-... tool output (clipped to ~8 KB) ...
-</tool_response><|im_end|>
-<|im_start|>assistant
-<think>
-```
+13. **13 — Plain `alltoall` + EP=8 + 16K cap.** Final isolating test: same
+    EP and response cap as 11 but with the default SGLang MoE backend.
+    Result: **per-step times nearly identical to 11** in the tail
+    (p7-p8 sum = 6749s vs 11's 6709s, <1% difference). So the straggler
+    problem is **workload-fundamental, not DeepEP-specific**. The
+    inference backend doesn't matter for the long-context decode tail.
+    TIMEOUT at 8h, 9 perfs, raw_reward still flat at ~5%.
 
-After the rollout, the agent's final `run_tests` call's exit code is stashed
-on the sample. `reward_func` reads that verdict — no fresh sandbox needed,
-which avoids a second image-pull per sample.
+## What this told us about agentic RL on Qwen3-Thinking
 
-```python
-score = 1.0 if tests_passed else 0.0
-# Tiny shaping: 0.05 if the agent called submit but tests didn't pass,
-# so the model learns to terminate cleanly rather than burning the turn budget.
-```
+- The plumbing is solid. Slime, SGLang, Megatron, Modal, the metric
+  wrapper, partial-rollout, weight intervals, JSONL metric capture —
+  all verified.
+- The bottleneck is per-sample wall-clock cost. Mean trajectory does 20-22
+  tool calls (max_turns=30 doesn't bind), but per-turn cost varies wildly
+  because Qwen3-Thinking emits 8-15K chain-of-thought tokens per hard turn.
+- **`--rollout-max-response-len 16K` is the single most impactful flag.**
+  10 (32K) had a 4-hour catastrophic step. 11/13 (16K) cap the worst step
+  at ~3.5K seconds, yielding ~2× cumulative wallclock improvement.
+- **No inference-side config fixes the straggler tail.** DeepEP modes
+  (auto, normal) and plain alltoall all converge to the same post-push
+  per-step time once the rollout is in the long-tail regime. The driver
+  is single-sample-on-engine decode inefficiency at long context, not
+  the all-to-all backend.
+- The effective best config is **alltoall + EP=8 + 16K + interval=5**
+  (= experiment 13's setup). DeepEP isn't worth the complexity.
+- Reward signal is **flat at ~5% across all of 09-13**. The slime
+  plumbing isn't the blocker for learning — the workload is. Real
+  progress would need reward shaping, a smaller/faster model, or
+  more curated easy instances.
 
-## Comparison vs. retool
+## Running tests
 
-| aspect | retool (math) | swe-env (this) |
-|---|---|---|
-| sample shape | `prompt` (problem text) + `label` (answer string) | `prompt` (issue body) + `label` (instance_id) |
-| sandbox lifetime | warm pool, many python execs each | one per rollout, dies after |
-| tools | `code_interpreter(code)` | 6-tool set above |
-| sandbox network | blocked | unblocked |
-| reward | regex parse + math equivalence | `/eval.sh` exit code in the rollout sandbox |
-| typical rollout wallclock | 5–8 min (math CoT + a few execs) | 5–10 min (agent + observations + tests) |
-
-## Prereqs
-
-1. **Modal account + credentials.** Save a Modal config TOML at
-   `<slime_root>/.modal.toml`, or export `MODAL_CONFIG_PATH` to a custom
-   path. The SDK reads either.
-2. **Hugging Face token** (for downloading `Qwen3-235B-A22B-Thinking-2507-FP8`):
-   put it at `<slime_root>/.hf_token.txt` or export `HF_TOKEN`.
-3. **Qwen3-235B-A22B-Thinking-2507-FP8 weights + torch_dist conversion**
-   under `<slime_root>/mnt/checkpoints/` — see slime's standard model setup.
-4. **slime container image** that bundles SGLang 0.5.9 + Megatron-LM + Ray.
-   `slimerl/slime:nightly-dev-20260425a` is what these scripts pin.
-
-The smoke + unit tests don't need GPUs — only Modal credentials and ~30s
-to pull one Epoch AI image.
-
-## Quick start
-
-### 1. Validate the sandbox library (no GPUs)
+All hermetic — no Modal, no slime, no GPUs required:
 
 ```bash
-# from slime root
-uv venv .venv-swe-env --python 3.11
-uv pip install --python .venv-swe-env/bin/python "modal>=0.65"
-
-MODAL_CONFIG_PATH=$PWD/.modal.toml \
-  .venv-swe-env/bin/python examples/qwen3-235b_fullasync_swe-env/smoke_test_sandbox.py
-# expect: 10 passed, 0 failed.
+python3 tests/test_coding_sandbox.py    # 18 tests
+python3 tests/test_metric_fix.py        # 10 tests
 ```
 
-### 2. Validate the agent loop (no SGLang, real Modal sandbox)
-
-```bash
-MODAL_CONFIG_PATH=$PWD/.modal.toml \
-  .venv-swe-env/bin/python examples/qwen3-235b_fullasync_swe-env/test_codingagent.py
-# expect: 24 passed, 0 failed.
-```
-
-### 3. Build a prompt-data slice
-
-```bash
-.venv-swe-env/bin/python examples/qwen3-235b_fullasync_swe-env/gen_prompt_data.py
-# writes mnt/data/swebench_verified/sample.jsonl with 10 instances
-```
-
-### 4. Launch a training run on 12 H200 nodes (4 actor + 8 rollout)
-
-```bash
-sbatch examples/qwen3-235b_fullasync_swe-env/run_swe.sbatch
-```
-
-Outputs land in `mnt/logs/infx-swe-async-<job_id>.out`. Watch for:
-
-- `server is fired up and ready to roll!` × 8 — all SGLang engines up (~10 min)
-- `First rollout sample: ...` — first dispatch landed
-- `Finish rollout: ...` — first trajectory finished
-- `data.py: rollout N: {...}` — trainer-side batch metrics
-- `train_metric_utils.py: perf N: {...}` — trainer-side perf stats
-
-## Configuration
-
-### Env vars read by `coding_sandbox.py`
-
-| var | default | meaning |
-|---|---|---|
-| `MODAL_CONFIG_PATH` | `~/.modal.toml` (Modal SDK default) | Modal credentials |
-| `SLIME_SWEBENCH_APP` | `infx-slime-swebench-sandbox` | Modal app name |
-| `SLIME_SWEBENCH_MAX_CONCURRENT` | `32` | Cap on live sandboxes |
-| `SLIME_SWEBENCH_SPAWN_QPS` | `4` | Sandbox creates per second |
-| `SLIME_SWEBENCH_TIMEOUT` | `1800` | Sandbox wallclock (seconds) |
-| `SLIME_SWEBENCH_PER_CMD_TIMEOUT` | `120` | Per-command timeout |
-| `SLIME_SWEBENCH_MAX_STREAM_BYTES` | `131072` | Stdout/stderr cap per command |
-| `SLIME_SWEBENCH_IMAGE_REGISTRY` | `ghcr.io/epoch-research` | Image registry prefix |
-| `SLIME_SWEBENCH_WORKDIR` | `/testbed` | Sandbox working dir |
-
-### Env vars read by `generate_with_codingagent.py`
-
-| var | default | meaning |
-|---|---|---|
-| `SLIME_SWEBENCH_MAX_TURNS` | `30` | Hard cap on agent turns per rollout |
-| `SLIME_SWEBENCH_MAX_TOOL_CALLS` | `30` | Equivalent cap on tool dispatches |
-| `SLIME_SWEBENCH_MAX_OBS_CHARS` | `8000` | Per-turn observation char cap |
-
-### Key slime CLI flags in `run_swe.sh`
-
-```bash
---custom-generate-function-path generate_with_codingagent.generate
---custom-rm-path                generate_with_codingagent.reward_func
---prompt-data    mnt/data/swebench_verified/sample.jsonl
---input-key      prompt
---label-key      label
---rollout-max-response-len 32768
---advantage-estimator gspo
---eps-clip 4e-4
-```
-
-## Results (baseline)
-
-Untrained `Qwen3-235B-A22B-Thinking-2507-FP8` on a 10-instance Verified
-slice, 20 rollouts × 4 samples per prompt = 80 trajectories per batch.
-Effective context cap = 16 K tokens (CP × max_tokens_per_gpu = 2 × 8 K).
-
-| metric | value |
-|---|---|
-| raw_reward (mean) | 0.017 |
-| truncated_ratio (mean) | 0.66 |
-| log_probs_time (steady-state) | 6.8 s |
-| actor_train_time | 53.9 s |
-| update_weights_time | 33.8 s |
-| log_probs_tflops | 88.9 |
-| actor_train_tflops | 32.9 |
-| rollout_time | 343 s |
-
-~1.5% zero-shot solve rate matches published agentic baselines for an
-untrained 235B model. **66% truncation indicates the 16K cap is the
-throttle** — see the context-scaling section below.
-
-## Extension points
-
-1. **Context cap.** A one-flag bump (`--max-tokens-per-gpu 8192 → 16384`)
-   gives 32K effective context; in our runs that drove truncation from
-   66% → 4.7% and raw_reward from 0.017 → 0.047. The trainer is also
-   ~19% faster per step. Going beyond 32K (via PP=4→2 + CP=2→4) works
-   but the model doesn't naturally produce trajectories that long, so the
-   extra capacity goes unused.
-2. **Partial-credit reward.** Currently `/eval.sh` exit code is binary.
-   Parsing the test runner to count `FAIL_TO_PASS` tests passed would
-   give denser signal.
-3. **Sandbox network policy.** `block_network=False` by default — a model
-   could in principle curl out for test answers. Curated allow-list
-   (PyPI, GitHub) is a sensible hardening step.
-4. **Image cold-start.** First pull of an instance image is ~30s. Modal
-   caches after, but heterogeneous batches eat startup latency. Worth
-   pre-pulling the top-N most common instances at process start.
-5. **Patch staging.** `submit` is currently a special tool. Alternative:
-   take the `git diff` at end of rollout as the implicit patch.
+`smoke_test_sandbox.py` uses real Modal — needs `MODAL_CONFIG_PATH` and
+network access.

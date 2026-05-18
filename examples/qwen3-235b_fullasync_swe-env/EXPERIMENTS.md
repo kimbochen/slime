@@ -27,6 +27,8 @@ the relevant `lib/` SHA so anyone wanting an exact replay can
 | 11 | sglang-deepep-16k-response | 31395 | ⚠️ | DeepEP `auto` (low_latency): straggler-tail collapse, 8× per-token slowdown post-push |
 | 12 | deepep-normal-16k-response | 31507 | ❌ | DeepEP `normal` mode DOA: cuda graphs broken, 0% hit rate, 5-11 tok/s eager |
 | 13 | ep8-no-deepep-16k-response | 31508 | ✅ | TIMEOUT 8h, 9 perfs. Confirms straggler tail is workload-fundamental, not DeepEP-specific |
+| 14 | pp4cp2-32k-trainer-8k-response | 31816 / 31887 | ❌ | 32K trainer + 8K response: 30% faster steady-state but 40% reward drop. Re-launch crashed at 7h24m with same gloo recv timeout as 09. 8K cap doesn't prevent the long tail |
+| 15 | pp4cp2-32k-trainer-16k-response | 31888 | ❌ | Same trainer reshape with 16K response: reward recovered (~5%) but steady-state SLOWER than 13 (558s vs 465s), crashed at 2h00m on 1st weight push. **PP=4/CP=2 reshape doesn't help.** |
 
 ## Top-level findings
 
@@ -68,14 +70,32 @@ difference is on the weight broadcast step (`update_weights_time` drops
 from ~43s to ~37s with EP=8). DeepEP-the-backend was the wrong attribution
 for most of that win — the EP=8 sharding itself is responsible.
 
-**Effective best config** (matches experiment 13):
+**`--rollout-max-response-len 8K` (exp 14) is too aggressive.** Halving
+the per-turn cap from 16K to 8K gave 30% steady-state speedup but
+dropped raw_reward from ~5% to ~3% (40% relative drop). `truncated_ratio
+= 0.00` confirms it's not hard truncation — the model just *adapts* to
+the smaller budget and emits shallower thinking, so patch quality
+drops. **16K is the sweet spot** for both speed and accuracy.
+
+**Effective best config** (matches experiment 13, *not* 14):
 
 ```
 --rollout-max-response-len 16384      # cap response per turn (most important)
+                                      # NOT 8K — 8K hurts accuracy too much (exp 14)
 --update-weights-interval 5           # amortize weight broadcasts
 --sglang-ep-size 8                    # marginal win on broadcast
 # (default alltoall; do NOT use --sglang-moe-a2a-backend deepep)
 ```
+
+**Trainer reshape (PP=4/CP=2, 32K context) doesn't help (exp 15 resolved
+this).** Tested directly with 16K response cap: per-step time goes from
+13's 465s → 15's 558s (20% **slower**), AND the run crashed at 2h00m on
+the first weight push (gloo recv timeout — same class as 09/14, just
+earlier). PP=4 adds pipeline-bubble overhead and more collective
+participants under stress, with no compensating benefit at our scale.
+
+**14's apparent 30% speedup was 100% from the 8K response cap, which
+cost ~40% of reward.** Not a usable optimization.
 
 **Reward signal is still flat at ~5% across all runs (09-13).** The
 straggler problem isn't blocking learning per se — it's just slowing

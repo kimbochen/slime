@@ -78,6 +78,76 @@ def test_missing_model_patch_key_returns_zero() -> None:
     assert "no model_patch" in sample.metadata.get("reward_fail_reason", "")
 
 
+def test_fail_reason_jsonl_appends_when_env_set(tmp_path=None) -> None:
+    """When SLIME_REWARD_FAIL_JSONL is set, every fail reason is appended as
+    one JSON record with {ts, instance_id, category, reason}."""
+    import tempfile
+    import reward
+
+    with tempfile.TemporaryDirectory() as td:
+        jsonl_path = os.path.join(td, "reward-fails.jsonl")
+        os.environ["SLIME_REWARD_FAIL_JSONL"] = jsonl_path
+        try:
+            # Trigger two distinct fail paths.
+            s1 = _make_sample({})                                      # missing instance_id
+            _run(reward.compute_reward(None, s1))
+            s2 = _make_sample(
+                {"instance_id": "django__django-12345", "model_patch": ""},
+                status_name="COMPLETED",
+            )
+            _run(reward.compute_reward(None, s2))
+
+            assert os.path.exists(jsonl_path), "JSONL was not written"
+            lines = [l for l in open(jsonl_path).read().splitlines() if l.strip()]
+            assert len(lines) == 2, f"expected 2 records, got {len(lines)}: {lines}"
+
+            r1 = json.loads(lines[0])
+            assert r1["category"] == "other"          # "missing instance_id" → "other"
+            assert "instance_id" in r1["reason"]
+            assert r1["instance_id"] == "?"           # no instance_id available
+            assert "ts" in r1
+
+            r2 = json.loads(lines[1])
+            assert r2["category"] == "no_model_patch"
+            assert "no model_patch" in r2["reason"]
+            assert r2["instance_id"] == "django__django-12345"
+        finally:
+            os.environ.pop("SLIME_REWARD_FAIL_JSONL", None)
+
+
+def test_fail_reason_jsonl_noop_when_env_unset() -> None:
+    """When SLIME_REWARD_FAIL_JSONL is unset, reward.py writes nothing.
+    Guarantees backward compat for callers who don't opt in."""
+    import reward
+    # Make sure env var is not present.
+    os.environ.pop("SLIME_REWARD_FAIL_JSONL", None)
+    sample = _make_sample({})
+    score = _run(reward.compute_reward(None, sample))
+    assert score == 0.0
+    # Metadata mutation still happens — only the JSONL side effect is gated.
+    assert "instance_id" in sample.metadata.get("reward_fail_reason", "")
+
+
+def test_categorize_buckets() -> None:
+    """The bucketer in reward.py mirrors metrics._REWARD_FAIL_BUCKETS so that
+    a future join across the two JSONLs is keyed on the same category names."""
+    import reward
+    cases = {
+        "missing instance_id in metadata": "other",
+        "no model_patch (status=COMPLETED)": "no_model_patch",
+        "test_patch apply failed (rc=1): error: ...": "test_patch_failed",
+        "model_patch apply failed (rc=1): error: patch failed at line 42":
+            "model_patch_failed",
+        "pytest exit 1; tail of output: ...":           "pytest_exit_nonzero",
+        "no test ids in metadata":                       "other",
+        "reward sandbox failed: SandboxCreateError(...)": "sandbox_error",
+        "something totally unexpected":                  "other",
+    }
+    for reason, expected in cases.items():
+        assert reward._categorize(reason) == expected, \
+            f"{reason!r} → {reward._categorize(reason)!r}, expected {expected!r}"
+
+
 # ---------------------------------------------------------------------------
 # Live tests (gated)
 # ---------------------------------------------------------------------------
@@ -183,6 +253,9 @@ def main() -> int:
         test_no_instance_id_returns_zero_and_sets_reason,
         test_empty_model_patch_returns_zero_with_status_in_reason,
         test_missing_model_patch_key_returns_zero,
+        test_fail_reason_jsonl_appends_when_env_set,
+        test_fail_reason_jsonl_noop_when_env_unset,
+        test_categorize_buckets,
         # live
         test_gold_patch_scores_one_live,
         test_invalid_patch_scores_zero_live,

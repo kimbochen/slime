@@ -81,7 +81,12 @@ ROLLOUT_ARGS=(
                                 # more zero-std groups (~75-100%) so less
                                 # gradient signal per step.
    --rollout-max-response-len 16384
-   --rollout-max-context-len 32768  # REQUIRED by our generate.py (asserts)
+   --rollout-max-context-len 65536  # Bumped from 32768 to use the trainer's
+                                     # full effective context cap (CP=4 ×
+                                     # max_tokens_per_gpu=16384 = 64K). Lets
+                                     # samples that were hitting the 32K cap
+                                     # generate longer multi-turn trajectories.
+                                     # REQUIRED by our generate.py (asserts).
    --rollout-temperature 1.0
 
    # Partial rollout + TIS: our generate.py supports resume across aborts
@@ -193,8 +198,15 @@ MODAL_CONFIG_PATH="${MODAL_CONFIG_PATH:-${SLIME_ROOT}/.modal.toml}"
 
 # JSONL sidecar — log_patch auto-loaded via sitecustomize.py appends
 # every metric call (rollout, perf, train, eval) to this path. Unset → no-op.
-SLIME_METRICS_JSONL="${SLIME_METRICS_JSONL:-${SLIME_ROOT}/mnt/logs/metrics-${SLURM_JOB_ID:-manual}.jsonl}"
+SLIME_METRICS_JSONL="${SLIME_METRICS_JSONL:-${SLIME_ROOT}/examples/swe-bench/results/metrics-${SLURM_JOB_ID:-manual}.jsonl}"
 mkdir -p "$(dirname "${SLIME_METRICS_JSONL}")"
+
+# Per-sample reward-fail JSONL — reward.py appends one line per non-1.0
+# sample with {instance_id, category, reason}. Lets us see WHY a bucket
+# fired (e.g. the actual `git apply` rejection message) which the bucketed
+# metrics in SLIME_METRICS_JSONL discard. Unset → no-op.
+SLIME_REWARD_FAIL_JSONL="${SLIME_REWARD_FAIL_JSONL:-${SLIME_ROOT}/examples/swe-bench/results/reward-fails-${SLURM_JOB_ID:-manual}.jsonl}"
+mkdir -p "$(dirname "${SLIME_REWARD_FAIL_JSONL}")"
 
 MEGATRON_LM_PATH="${MEGATRON_LM_PATH:-/root/Megatron-LM}"
 
@@ -209,6 +221,7 @@ RUNTIME_ENV_JSON=$(cat <<EOF
     "NCCL_NVLS_ENABLE": "${HAS_NVLINK}",
     "MODAL_CONFIG_PATH": "${MODAL_CONFIG_PATH}",
     "SLIME_METRICS_JSONL": "${SLIME_METRICS_JSONL}",
+    "SLIME_REWARD_FAIL_JSONL": "${SLIME_REWARD_FAIL_JSONL}",
     "SLIME_SWEBENCH_APP": "${SLIME_SWEBENCH_APP:-slime-swebench-sandbox}",
     "SLIME_SWEBENCH_TIMEOUT": "${SLIME_SWEBENCH_TIMEOUT:-1800}",
     "SLIME_SWEBENCH_PER_CMD_TIMEOUT": "${SLIME_SWEBENCH_PER_CMD_TIMEOUT:-120}",

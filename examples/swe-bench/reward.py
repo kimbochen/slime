@@ -29,7 +29,9 @@ Wire via:
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from typing import Any
 
 from sandbox import (
@@ -52,6 +54,58 @@ CONDA_ACTIVATE = os.environ.get(
 )
 
 
+# Bucket categories that mirror metrics._REWARD_FAIL_BUCKETS — used in the
+# per-sample fail-reason JSONL so downstream analysis can join on this string
+# without re-doing the substring bucketing.
+_REASON_CATEGORY: tuple[tuple[str, str], ...] = (
+    ("missing instance_id",     "other"),
+    ("no model_patch",          "no_model_patch"),
+    ("test_patch apply failed", "test_patch_failed"),
+    ("model_patch apply failed","model_patch_failed"),
+    ("pytest exit",             "pytest_exit_nonzero"),
+    ("no test ids",             "other"),
+    ("reward sandbox failed",   "sandbox_error"),
+)
+
+
+def _categorize(reason: str) -> str:
+    for substr, cat in _REASON_CATEGORY:
+        if substr in reason:
+            return cat
+    return "other"
+
+
+def _set_fail_reason(sample: Any, reason: str) -> None:
+    """Record fail reason on sample.metadata AND append it to the per-sample
+    reward-fail JSONL (if SLIME_REWARD_FAIL_JSONL is set).
+
+    Why: metrics.py only persists *bucketed counts* (e.g. model_patch_failed_frac).
+    The raw reason — which tells us *why* a bucket fired (e.g. which file
+    rejected a patch) — would otherwise be discarded. The JSONL gives us the
+    raw strings for post-hoc analysis without bloating the noisy training log.
+
+    POSIX O_APPEND makes plain open('a').write atomic for writes < PIPE_BUF
+    (4KB on Linux), so concurrent rollout workers can share one file without
+    locking. We truncate `reason` to 500 chars upstream, so entries stay <1KB.
+    """
+    sample.metadata["reward_fail_reason"] = reason
+    path = os.environ.get("SLIME_REWARD_FAIL_JSONL")
+    if not path:
+        return
+    try:
+        record = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "instance_id": sample.metadata.get("instance_id", "?"),
+            "category": _categorize(reason),
+            "reason": reason,
+        }
+        with open(path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        # JSONL emission is best-effort; never let it break reward scoring.
+        pass
+
+
 async def compute_reward(args: Any, sample: Any, **kwargs: Any) -> float:
     """Slime --custom-rm-path entry point.
 
@@ -62,7 +116,7 @@ async def compute_reward(args: Any, sample: Any, **kwargs: Any) -> float:
     """
     instance_id = sample.metadata.get("instance_id")
     if not isinstance(instance_id, str) or not instance_id:
-        sample.metadata["reward_fail_reason"] = "missing instance_id in metadata"
+        _set_fail_reason(sample, "missing instance_id in metadata")
         return 0.0
 
     # Rollout never produced edits (sample failed, model emitted finish-only,
@@ -70,9 +124,7 @@ async def compute_reward(args: Any, sample: Any, **kwargs: Any) -> float:
     # fix — skip the eval and return 0.0 to save Modal cost.
     model_patch = sample.metadata.get("model_patch", "")
     if not model_patch.strip():
-        sample.metadata["reward_fail_reason"] = (
-            f"no model_patch (status={sample.status.name})"
-        )
+        _set_fail_reason(sample, f"no model_patch (status={sample.status.name})")
         return 0.0
 
     test_patch = sample.metadata.get("test_patch", "")
@@ -87,8 +139,8 @@ async def compute_reward(args: Any, sample: Any, **kwargs: Any) -> float:
                 "cd /testbed && git apply --whitespace=nowarn /tmp/test_patch.diff"
             )
             if rc != 0:
-                sample.metadata["reward_fail_reason"] = (
-                    f"test_patch apply failed (rc={rc}): {out[:500]}"
+                _set_fail_reason(
+                    sample, f"test_patch apply failed (rc={rc}): {out[:500]}"
                 )
                 return 0.0
 
@@ -98,8 +150,8 @@ async def compute_reward(args: Any, sample: Any, **kwargs: Any) -> float:
             "cd /testbed && git apply --whitespace=nowarn /tmp/model_patch.diff"
         )
         if rc != 0:
-            sample.metadata["reward_fail_reason"] = (
-                f"model_patch apply failed (rc={rc}): {out[:500]}"
+            _set_fail_reason(
+                sample, f"model_patch apply failed (rc={rc}): {out[:500]}"
             )
             return 0.0
 
@@ -110,7 +162,7 @@ async def compute_reward(args: Any, sample: Any, **kwargs: Any) -> float:
         pass_to_pass = sample.metadata.get("pass_to_pass", []) or []
         test_ids = list(fail_to_pass) + list(pass_to_pass)
         if not test_ids:
-            sample.metadata["reward_fail_reason"] = "no test ids in metadata"
+            _set_fail_reason(sample, "no test ids in metadata")
             return 0.0
 
         # Write test list to a file to avoid shell-argv length limits — some
@@ -124,14 +176,14 @@ async def compute_reward(args: Any, sample: Any, **kwargs: Any) -> float:
         out, rc = await sandbox.exec(eval_cmd, timeout=EVAL_TIMEOUT_S)
         if rc == 0:
             return 1.0
-        sample.metadata["reward_fail_reason"] = (
-            f"pytest exit {rc}; tail of output: ...{out[-500:]}"
+        _set_fail_reason(
+            sample, f"pytest exit {rc}; tail of output: ...{out[-500:]}"
         )
         return 0.0
 
     except (SandboxCreateError, SandboxReattachError, SandboxDiedError) as e:
         # Modal infrastructure failure during eval — can't score this sample.
-        sample.metadata["reward_fail_reason"] = f"reward sandbox failed: {e!r}"
+        _set_fail_reason(sample, f"reward sandbox failed: {e!r}")
         return 0.0
     finally:
         # Always tear down — reward sandboxes are one-shot, no resume use case.

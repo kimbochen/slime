@@ -31,8 +31,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any
+
+
+# Python module path: dotted identifiers, nothing else. Used to recognize
+# "test_utils.tests.SomeClass" and reject docstring-only test IDs that would
+# blow up the shell.
+_DOTTED_PATH_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 from sandbox import (
     SWEBenchSandbox,
@@ -73,6 +80,87 @@ def _categorize(reason: str) -> str:
         if substr in reason:
             return cat
     return "other"
+
+
+def _django_classes(test_ids: list[str]) -> list[str]:
+    """Extract unique "module.path.Class" prefixes from django-style test IDs.
+
+    SWE-bench stores django test IDs in unittest's DISPLAY format, which is:
+      - "<test_method_name> (module.path.Class)"   when no docstring, OR
+      - "<docstring_first_line> (module.path.Class)" when method has a docstring
+    There's no reliable way to recover the method name from the docstring form
+    without importing the class and introspecting. So we punt: run the WHOLE
+    CLASS in runtests.py and trust the binary pass/fail.
+
+    Cost: lose per-method granularity. A model that fixes the target
+    FAIL_TO_PASS test but breaks an UNRELATED test in the same class will
+    score 0.0 — but that's a reasonable signal ("don't break things").
+
+    We use rpartition(' (') (not partition) because some docstrings themselves
+    contain "(" (e.g. "setUp() is reraised"), and the class always comes after
+    the LAST " (" in the string.
+    """
+    classes: set[str] = set()
+    for t in test_ids:
+        s = t.strip()
+        if s.endswith(")") and " (" in s:
+            _, _, rest = s.rpartition(" (")
+            cand = rest.rstrip(")").strip()
+        else:
+            cand = s
+        # SKIP anything that doesn't look like a Python module path.
+        # Some django PASS_TO_PASS entries are docstring-only (no class
+        # suffix at all, e.g. "An exception is setUp() is reraised..."),
+        # which contain shell metachars like '(' that break bash parsing.
+        # We lose regression coverage on those tests — acceptable trade
+        # vs. a hard 0.0 on the whole eval.
+        if _DOTTED_PATH_RE.fullmatch(cand):
+            classes.add(cand)
+    return sorted(classes)
+
+
+def _well_formed_pytest_id(s: str) -> bool:
+    """Reject pytest test IDs with unbalanced brackets. These are SWE-bench
+    data-extraction bugs (truncated at whitespace inside a parameter), e.g.
+    "test_x[escaped" missing the closing "]". Passing them to pytest yields
+    "not found" → exit 4 → falsely zeroes the whole sample. Dropping them
+    means we only verify the well-formed subset — imperfect but better than
+    a hard zero.
+    """
+    return s.count("[") == s.count("]")
+
+
+def _make_eval_cmd(repo: str, test_ids: list[str]) -> tuple[str, str | None]:
+    """Return (shell_command, tests_file_content_or_None) for one instance.
+
+    Repo-specific dispatch because the SWE-bench test runner is the repo's
+    canonical one, NOT a universal pytest invocation:
+      - django uses its own runtests.py with --settings=test_sqlite (no DB)
+        and we pass CLASS-level test paths (see _django_classes for why).
+      - Everything else uses pytest via `xargs -d '\n'`. The `-d '\n'` tells
+        xargs to split input on newlines ONLY and disables its default
+        shell-style quote interpretation — without it, parametrized pytest
+        IDs that contain quotes, brackets, or whitespace (e.g.
+        "test_x[a 'b' c]") get mangled or rejected. (pytest itself does NOT
+        support an @argfile syntax — fromfile_prefix_chars is unset.)
+        We also drop malformed (unbalanced-bracket) IDs upstream of xargs.
+    """
+    activate = f"source {CONDA_ACTIVATE} {CONDA_ENV} && cd /testbed && "
+    if repo == "django/django":
+        classes = _django_classes(test_ids)
+        cmd = (
+            activate
+            + "./tests/runtests.py --verbosity=0 --settings=test_sqlite "
+            + "--parallel=1 " + " ".join(classes)
+        )
+        return cmd, None
+    filtered = [t for t in test_ids if _well_formed_pytest_id(t)]
+    cmd = (
+        activate
+        + "xargs -d '\\n' -a /tmp/tests.txt "
+        + "python -m pytest --tb=no -q --no-header"
+    )
+    return cmd, "\n".join(filtered)
 
 
 def _set_fail_reason(sample: Any, reason: str) -> None:
@@ -165,14 +253,14 @@ async def compute_reward(args: Any, sample: Any, **kwargs: Any) -> float:
             _set_fail_reason(sample, "no test ids in metadata")
             return 0.0
 
-        # Write test list to a file to avoid shell-argv length limits — some
-        # SWE-bench instances have 1000+ tests.
-        await sandbox.write_file("/tmp/tests.txt", "\n".join(test_ids))
-        eval_cmd = (
-            f"source {CONDA_ACTIVATE} {CONDA_ENV} && "
-            f"cd /testbed && "
-            f"xargs -a /tmp/tests.txt python -m pytest --tb=no -q --no-header"
-        )
+        # Repo-specific test runner — django uses runtests.py, everything
+        # else uses pytest. See _make_eval_cmd for why xargs is wrong.
+        repo = sample.metadata.get("repo", "")
+        eval_cmd, tests_file_content = _make_eval_cmd(repo, test_ids)
+        if tests_file_content is not None:
+            # Use file indirection for the pytest path to avoid shell-argv
+            # length limits — some instances have 1000+ tests.
+            await sandbox.write_file("/tmp/tests.txt", tests_file_content)
         out, rc = await sandbox.exec(eval_cmd, timeout=EVAL_TIMEOUT_S)
         if rc == 0:
             return 1.0

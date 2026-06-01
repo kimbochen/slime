@@ -128,6 +128,127 @@ def test_fail_reason_jsonl_noop_when_env_unset() -> None:
     assert "instance_id" in sample.metadata.get("reward_fail_reason", "")
 
 
+def test_django_classes_extracts_class_paths_via_rpartition() -> None:
+    """SWE-bench django test IDs are "<name> (module.Class)" where <name> is
+    EITHER the method name OR the method's docstring first line. Docstrings
+    can themselves contain " (" (e.g. "setUp() is reraised"), so we MUST use
+    rpartition on the LAST " (" to find the class. We then drop the name
+    entirely and just return the unique class paths."""
+    import reward
+    ids = [
+        # Plain method-name format.
+        "test_override_file_upload_permissions (test_utils.tests.OverrideSettingsTests)",
+        "test_callable_path (model_fields.test_filepathfield.FilePathFieldTests)",
+        # Docstring-as-name with internal "(" — the rpartition case.
+        "An exception is setUp() is reraised after disable() is called. (test_utils.tests.SomeClass)",
+        "assertRaisesMessage shouldn't interpret RE special chars. (test_utils.tests.SomeClass)",
+        # Duplicate (same class as above) — should collapse to one entry.
+        "test_other_method (test_utils.tests.SomeClass)",
+    ]
+    got = reward._django_classes(ids)
+    assert got == sorted({
+        "test_utils.tests.OverrideSettingsTests",
+        "model_fields.test_filepathfield.FilePathFieldTests",
+        "test_utils.tests.SomeClass",
+    }), f"got {got}"
+
+
+def test_django_classes_skips_docstring_only_entries() -> None:
+    """Some django PASS_TO_PASS entries are JUST a docstring with no
+    "(module.Class)" suffix at all. They contain shell metacharacters like
+    '(' that would break bash. We MUST drop these to avoid the bash parse
+    error overwhelming the whole eval. (Confirmed in django__django-10914.)"""
+    import reward
+    ids = [
+        "test_legit (test_utils.tests.SomeClass)",     # keep — converts to class
+        "module.path.Class.test_method",                # keep — already dotted
+        "An exception is setUp() is reraised after disable() is called.",   # SKIP
+        "assertRaisesMessage shouldn't interpret RE special chars.",        # SKIP
+        "testing/test_assertrewrite.py::TestX::test_y",                     # SKIP (pytest-style, not dotted)
+    ]
+    got = reward._django_classes(ids)
+    assert got == sorted({
+        "test_utils.tests.SomeClass",
+        "module.path.Class.test_method",
+    }), f"got {got}"
+
+
+def test_well_formed_pytest_id_rejects_unbalanced_brackets() -> None:
+    """SWE-bench's data extraction sometimes truncates parametrized test IDs
+    at whitespace inside the parameter, leaving an unbalanced '['. Passing
+    these to pytest yields 'not found' → exit 4 → false 0.0. Filter them out."""
+    import reward
+    assert reward._well_formed_pytest_id("test_x")                       is True
+    assert reward._well_formed_pytest_id("test_x[trivial]")              is True
+    assert reward._well_formed_pytest_id("test_x[a-b]")                  is True
+    assert reward._well_formed_pytest_id("test_x[escaped")               is False   # truncated
+    assert reward._well_formed_pytest_id("test_x[multi-line")            is False
+    assert reward._well_formed_pytest_id("a::test_x[nested[inner]]")     is True
+
+
+def test_eval_cmd_uses_xargs_with_newline_delimiter_for_default_repo() -> None:
+    """Non-django repos must use `xargs -d '\\n'` (newline-only delimiter,
+    no shell quote interpretation) so parametrized test IDs with quotes,
+    brackets, or whitespace survive intact. Default xargs splits on
+    whitespace and treats quotes specially — that mangles pytest IDs."""
+    import reward
+    test_ids = [
+        "tests/test_foo.py::test_bar",
+        "tests/test_baz.py::test_with_params[a 'b' c]",   # the xargs-killer
+    ]
+    cmd, content = reward._make_eval_cmd("pytest-dev/pytest", test_ids)
+    assert "xargs -d '\\n'" in cmd, \
+        f"must use newline-delimiter xargs to disable quote interp: {cmd}"
+    assert "-a /tmp/tests.txt" in cmd, \
+        f"must read test IDs from file (argv length limit): {cmd}"
+    assert "python -m pytest" in cmd
+    assert content == "\n".join(test_ids), \
+        "tests file content must be exact newline-joined test IDs (no shell escaping)"
+
+
+def test_eval_cmd_uses_runtests_for_django() -> None:
+    """Django repos use runtests.py with CLASS-level paths (not method-level).
+    See _django_classes for why we lose per-method granularity."""
+    import reward
+    test_ids = [
+        "test_override_file_upload_permissions (test_utils.tests.OverrideSettingsTests)",
+        "test_callable_path (model_fields.test_filepathfield.FilePathFieldTests)",
+    ]
+    cmd, content = reward._make_eval_cmd("django/django", test_ids)
+    assert "runtests.py" in cmd, f"django must use runtests.py: {cmd}"
+    assert "pytest" not in cmd, f"django must not use pytest: {cmd}"
+    assert "--settings=test_sqlite" in cmd
+    # Class paths (NOT method paths) should be in the command.
+    assert "test_utils.tests.OverrideSettingsTests" in cmd
+    assert "model_fields.test_filepathfield.FilePathFieldTests" in cmd
+    # Method names should NOT appear — class-level eval drops them.
+    assert "test_override_file_upload_permissions" not in cmd, \
+        "must not pass method-level paths to runtests.py"
+    # Django path doesn't use the args file.
+    assert content is None
+
+
+def test_eval_cmd_filters_malformed_pytest_ids() -> None:
+    """SWE-bench data sometimes has truncated test IDs (unbalanced '['). We
+    drop them before passing to pytest so the eval runs against the well-
+    formed subset instead of getting a 'not found' → exit 4 → false 0.0."""
+    import reward
+    test_ids = [
+        "tests/test_x.py::test_a[good]",       # keep
+        "tests/test_x.py::test_b[broken",      # drop — truncated
+        "tests/test_x.py::test_c",             # keep
+        "tests/test_x.py::test_d[also broken", # drop
+    ]
+    cmd, content = reward._make_eval_cmd("pytest-dev/pytest", test_ids)
+    assert content is not None
+    lines = content.splitlines()
+    assert "tests/test_x.py::test_a[good]" in lines
+    assert "tests/test_x.py::test_c" in lines
+    assert "tests/test_x.py::test_b[broken" not in lines
+    assert "tests/test_x.py::test_d[also broken" not in lines
+    assert len(lines) == 2
+
+
 def test_categorize_buckets() -> None:
     """The bucketer in reward.py mirrors metrics._REWARD_FAIL_BUCKETS so that
     a future join across the two JSONLs is keyed on the same category names."""
@@ -256,6 +377,12 @@ def main() -> int:
         test_fail_reason_jsonl_appends_when_env_set,
         test_fail_reason_jsonl_noop_when_env_unset,
         test_categorize_buckets,
+        test_django_classes_extracts_class_paths_via_rpartition,
+        test_django_classes_skips_docstring_only_entries,
+        test_well_formed_pytest_id_rejects_unbalanced_brackets,
+        test_eval_cmd_uses_xargs_with_newline_delimiter_for_default_repo,
+        test_eval_cmd_uses_runtests_for_django,
+        test_eval_cmd_filters_malformed_pytest_ids,
         # live
         test_gold_patch_scores_one_live,
         test_invalid_patch_scores_zero_live,

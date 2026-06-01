@@ -149,3 +149,16 @@ srun --ntasks-per-node=1 --overlap \
      bash -c 'ray stop --force || true'
 kill "${HEAD_PID}" "${WORKER_PIDS[@]}" 2>/dev/null || true
 wait
+
+# Terminate any orphan Modal sandboxes left from the rollout. Even on clean
+# completion, ~1-2% of sandboxes leak because Ray's actor SIGTERM→SIGKILL
+# grace period (~30s) can be shorter than the Modal terminate.aio() RTT for
+# samples mid-generate.py-finally at job end. Run from the login node via
+# uv so it's independent of container/Ray state. Guarded by uv + .modal.toml
+# existence so this is a no-op in environments without them.
+if command -v uv >/dev/null 2>&1 && [ -f "${SLIME_ROOT}/.modal.toml" ]; then
+   echo "Terminating orphan Modal sandboxes..."
+   MODAL_CONFIG_PATH="${SLIME_ROOT}/.modal.toml" \
+   SLIME_SWEBENCH_APP="${SLIME_SWEBENCH_APP:-slime-swebench-sandbox}" \
+   uv run --quiet --with modal python "${SLIME_ROOT}/examples/swe-bench/cleanup_sandboxes.py" 2>&1 | tail -5 || true
+fi

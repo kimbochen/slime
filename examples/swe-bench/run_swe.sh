@@ -72,11 +72,14 @@ ROLLOUT_ARGS=(
 
    --num-rollout "${NUM_ROLLOUT:-200}"
    --rollout-batch-size "${ROLLOUT_BATCH_SIZE:-8}"
-   --n-samples-per-prompt 16   # Bumped from 8: at ~15% solve rate, 16-sample
-                                # groups have P(mixed outcome) ≈ 92% vs 73% with 8.
-                                # Dramatically reduces zero-std groups → more
-                                # gradient signal per step. Requires global_batch
-                                # bumped proportionally (else trainer drops samples).
+   --n-samples-per-prompt 8    # Reverted from 16: the 16-sample variant
+                                # consistently triggered SGLang engine
+                                # instability (one TP worker dying mid-forward,
+                                # cascading to gloo "Connection closed" → next
+                                # update_weights deadlock). 8-sample groups
+                                # are the proven-stable point. Trade-off:
+                                # more zero-std groups (~75-100%) so less
+                                # gradient signal per step.
    --rollout-max-response-len 16384
    --rollout-max-context-len 32768  # REQUIRED by our generate.py (asserts)
    --rollout-temperature 1.0
@@ -89,12 +92,8 @@ ROLLOUT_ARGS=(
    --tis-clip 2.0
    --tis-clip-low 0
 
-   --global-batch-size 128   # Must = rollout_batch_size × n_samples_per_prompt
-                              # (= 8 × 16) so trainer consumes all rollout data.
-                              # Memory-safe — slime breaks this into more
-                              # microbatches internally (capped by --max-tokens-per-gpu).
-                              # ~2× per-step compute vs old 64, but ~6× effective
-                              # gradient signal (zero-std groups drop from 73% → 8%).
+   --global-batch-size 64    # Must = rollout_batch_size × n_samples_per_prompt
+                              # (= 8 × 8) so trainer consumes all rollout data.
    --balance-data
 )
 
